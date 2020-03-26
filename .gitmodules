@@ -1,0 +1,12 @@
+[submodule "pybind11"]
+	path = pybind11
+	url = https://github.com/pybind/pybind11.git
+[submodule "tbb"]
+	path = tbb
+	url = https://github.com/wjakob/tbb.git
+[submodule "pcg32"]
+	path = pcg32
+	url = https://github.com/wjakob/pcg32.git
+[submodule "enoki"]
+	path = enoki
+	url = https://github.com/mitsuba-renderer/enoki.git
