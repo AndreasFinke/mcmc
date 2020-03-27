@@ -15,6 +15,7 @@ bool verbose = false;
 #include <map>
 #include <unordered_set>
 #include <list>
+#include <type_traits>
 
 #include "timer.h"
 #include "pcg32.h"
@@ -29,6 +30,9 @@ namespace py = pybind11;
 
 using Float = float;
 
+#define HAS_STEP std::shared_ptr<SubspaceState> copy() const override {\
+    return std::make_shared<std::remove_const_t<std::remove_reference_t<decltype(*this)>>>(*this);}
+
 using SharedParams = std::map<std::string, std::vector<Float>>;
 
 class State; 
@@ -39,7 +43,7 @@ friend class State;
 
 public:
 
-    float loglike = 0;
+    Float loglike = 0;
     Float stepsizeCorrectionFac = 1;
     bool derivedOnShared;
 
@@ -79,9 +83,14 @@ public:
 
     /* derived class needs to implement these */
     virtual std::shared_ptr<SubspaceState> copy() const = 0;
-    virtual void eval(const SharedParams& shared) = 0;
+    virtual void eval(const SharedParams& shared) { 
+        loglike = 0;
+    }
     //virtual Proposal step_impl(pcg32& rnd, const SharedParams& shared) const = 0;
-    virtual Proposal step(pcg32& rnd, const SharedParams& shared) const = 0;
+    virtual Proposal step(pcg32& rnd, const SharedParams& shared) const { 
+        auto newstate = copy();
+        return Proposal{newstate, 1};
+    }
     virtual ~SubspaceState() {};
 
     inline auto& getCoords()  { return coords; }
@@ -93,6 +102,10 @@ public:
         }
         else
             return {};
+    }
+
+    inline std::vector<Float>& getCoordsAt(const std::string name) {
+        return coords[names.at(name)]; 
     }
 
     inline bool isDerived(const std::string name) const {
@@ -134,14 +147,14 @@ protected:
     /* last nDerived coords are actually derived parameters TODO: need?*/
     size_t nDerived = 0;
 
-    inline std::optional<std::vector<Float>> getSharedCoords(const SharedParams& shared, const std::string name) const {
-        auto it = shared.find(name);
-        if (it != shared.end()) {
-            return it->second; 
-        }
-        else
-            return {};
-    }
+    //inline std::optional<std::vector<Float>> getSharedCoords(const SharedParams& shared, const std::string name) const {
+        //auto it = shared.find(name);
+        //if (it != shared.end()) {
+            //return it->second; 
+        //}
+        //else
+            //return {};
+    //}
 
 };
 
@@ -159,16 +172,16 @@ public:
     
     void eval(const SharedParams& shared) override {
 
-        auto f = getSharedCoords(shared, requestedSharedNames[0]);
+        auto f = shared.at(requestedSharedNames[0]);
         
-        if (!f) {
-            std::cout << "SmoothnessPrior cannot evaluate: " << requestedSharedNames[0] << " is not part of the shared parameters.\n";
-            return;
-        }
-        Float dx = (upper-lower)/f->size();  
+        //if (!f) {
+            //std::cout << "SmoothnessPrior cannot evaluate: " << requestedSharedNames[0] << " is not part of the shared parameters.\n";
+            //return;
+        //}
+        Float dx = (upper-lower)/f.size();  
         loglike = 0;
-        for (size_t i = 1; i < f->size()-1; ++i) { 
-            Float dd = (*f)[i+1] + (*f)[i-1] - 2*(*f)[i]; 
+        for (size_t i = 1; i < f.size()-1; ++i) { 
+            Float dd = f[i+1] + f[i-1] - 2*f[i]; 
             loglike -= dd*dd/dx/dx/dx; /*one dx cancels from the integration*/
 
         }
@@ -223,7 +236,7 @@ public:
 
     bool isInitialized = false;
 
-    int sharedDependencyMaxDepth = 1;
+    int sharedDependencyMaxDepth = 10;
 
     void add(const std::shared_ptr<SubspaceState>& s) { state.push_back(s); } 
 
@@ -301,8 +314,10 @@ public:
                     }
                 }
 
-                if (!found)
+                if (!found) { 
                     std::cout << "Shared name was not found in any subspace state.\n" << std::endl;
+                    throw std::string("Missing shared param");
+                }
             } // end go through all requested shared names of states[i]
         } // end go through all states i 
 
@@ -499,29 +514,6 @@ private:
         //}
     }
 
-    /* slow function to make shared params hash map, trying to find each shared name in any SubspaceState */
-    //void init_shared() {
-
-        //for (auto& n : sharedNames) {
-
-            //bool found = false;
-
-            //for (auto& l : state) {
-
-                //if (auto c = l->getCoords(n)) {
-                    //found = true;
-                    //shared[n] = *c;
-                    //break;
-                //}
-            //}
-
-            //if (!found)
-                //std::cout << "Shared name was not found in any subspace state.\n" << std::endl;
-        //}
-    //}
-
-
-
 };
 
 /* Target is a wrapper around State that adds user-defined weighing. 
@@ -533,14 +525,15 @@ public:
 
     void set_posterior(std::shared_ptr<State> s) { 
         
-        state = s; 
+        try {
+            s->init();
+            state = s; 
+            state->weight = weight();
 
-        /* initialization is crucial, but user may have not done it (if no shared parameters are needed) - do it here */
-        if (!state->isInitialized)
-            state->init();
-            //state->init({});
-            //
-        state->weight = weight();
+        }
+        catch (...) {
+            std::cout << "set_posterior failed. Fix Your setup and try again." << std::endl;
+        }  
 
     } 
 
@@ -562,6 +555,11 @@ public:
 
     void step(pcg32& rng, ProposalRecord& rec, Float time, bool isSubspaceRandom) {
 
+        if (state == nullptr) { 
+            rec.prop = {};
+            return;
+        }
+
         if (isSubspaceRandom)
             state->step_random_subspace(rng, rec);
         else
@@ -579,7 +577,7 @@ public:
 
     virtual ~SimpleTarget() {} 
 
-    std::shared_ptr<State> state;
+    std::shared_ptr<State> state = nullptr;
 
 };
 
@@ -631,9 +629,13 @@ public:
         START_NAMED_TIMER("Adjustment");
         for (int i = 0; i < nSamples+nAdjust; ++i)  {
 
-            auto singleStep = [&](ProposalRecord& rec, int& accept, bool isSubspaceRandom)  { 
+            auto singleStep = [&](ProposalRecord& rec, int& accept, bool isSubspaceRandom) -> bool { 
                 target->step(rnd, rec, Float(i)/nAdjust, isSubspaceRandom);
-
+                if (rec.prop.size() == 0) {
+                    if (verbose)
+                        std::cout << "No proposal received...\n";
+                    return false;
+                }
                 if (verbose)
                     std::cout << "Delta loglike (incl. weight and temp) " << rec.deltaloglike << ".\n";
                 if ( rnd.nextFloat() < rec.propasymratio*std::exp(rec.deltaloglike) ) { 
@@ -642,12 +644,16 @@ public:
                     if (verbose)
                         std::cout << "Accepted.\n";
                 }
+                return true;
             };
 
             ProposalRecord rec; 
 
             if (i == nAdjust)  { 
-                std::cout << "\n\nFinished adjustments. Now sampling.\n";
+                std::cout << "\n\nFinished adjustments.\n";
+                for (auto & s : target->state->state)
+                    std::cout << s->stepsizeCorrectionFac << "\n";
+                std::cout << "Now sampling.\n";
                 nAccept = 0;
                 STOP_TIMER;
                 START_NAMED_TIMER("Sampling");
@@ -661,7 +667,8 @@ public:
                 }
 
                 nAccept = 0;
-                singleStep(rec, nAccept, true);
+                if (!singleStep(rec, nAccept, true))
+                    return; 
 
                 int nRepeat = 100;
                 if (verbose)
@@ -770,3 +777,66 @@ protected:
 
 };
 
+
+class SumConstraint {
+public: 
+
+    Float constraint; 
+    std::vector<Float>* vals;
+
+    SumConstraint(Float constraint) : constraint(constraint) {} 
+
+    void link(std::vector<Float>* dataptr) { 
+
+        vals = dataptr;
+   
+        /* check constraint */ 
+        Float sum = 0;
+        for (auto f : (*vals)) {
+            sum += f;
+        }
+        /* if not satisied, enforce by setting to constant */
+        if ( std::fabs((sum-constraint)/constraint) > 0.0001) {
+            vals->assign(vals->size(), constraint/vals->size());
+            std::cout << "Warning: enforced positive sum contraint destructively.";
+        }
+
+    }
+
+    void step(pcg32& rnd, Float stepsize, int& from, int& to, Float& val, Float& volRatio) {
+
+        do { 
+            from = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
+            to   = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
+            val  = stepsize*rnd.nextFloat();
+            //std::cout << " from " << from << " to " << to <<"\n";
+        } 
+        while ( !moveMass(from, to, val) );
+
+        Float newVol = accessibleStateVol(stepsize);
+        Float oldVol = newVol - std::min(stepsize, (*vals)[from]) + std::min(stepsize, (*vals)[to]) - std::min(stepsize, (*vals)[from]+val) - std::min(stepsize, (*vals)[to]-val);
+
+        volRatio = oldVol / newVol;
+    }
+private: 
+
+    bool moveMass(int from, int to, Float val) { 
+
+        if (from == to) return false;
+
+        if ((*vals)[from] < val) return false;
+
+        (*vals)[to] += val;
+        (*vals)[from] -= val;
+
+        return true;
+    }
+
+    Float accessibleStateVol(Float stepsize) const { 
+        Float ret = 0;
+        for (auto f : (*vals)) 
+            ret += std::min(f, stepsize);
+        return ret;
+    }
+
+};

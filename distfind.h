@@ -43,17 +43,23 @@ struct ProbabilityDistributionSamples {
 };
 
 class PiecewiseConstantPDF : public SubspaceState {
+
+private: 
+    SumConstraint constraint;
+
 public: 
 
     Float lower, upper, binwidth;
     int nBins;
 
     PiecewiseConstantPDF(const ProbabilityDistributionSamples& data, Float lower, Float upper, int nBins) :
-        SubspaceState({"pdf"}), lower(lower), upper(upper), nBins(nBins), data(data) {
+        SubspaceState({"pdf"}), constraint(nBins/(upper-lower)), lower(lower), upper(upper), nBins(nBins), data(data) {
 
         binwidth = (upper-lower)/nBins;
 
         setCoords({std::vector<Float>(nBins, Float(1)/(upper-lower))}); 
+
+        constraint.link(&coords[0]);
 
         enoki::set_slices(pconv, enoki::slices(data.y));
 
@@ -74,22 +80,27 @@ public:
 
     Proposal step(pcg32& rnd, const SharedParams& shared) const override {
 
-        std::shared_ptr<PiecewiseConstantPDF> newstate = std::dynamic_pointer_cast<PiecewiseConstantPDF>(copy());
+        auto newstate = std::dynamic_pointer_cast<PiecewiseConstantPDF>(copy());
+        //std::shared_ptr<PiecewiseConstantPDF> newstate = std::dynamic_pointer_cast<PiecewiseConstantPDF>(copy());
 
         /* if acceptance rate is high because data is not contraining enough individual bins, during adjustment, stepsizeCorrectionFac is growing without
          * bounds. Restrict to just the maximum (max over all pdfs) simultaneous minimal (min over all bins) value which is attained for the initial, flat, pdf. Together with the random float this guarantees acceptance of all steps in the flat-like case*/
         newstate->stepsizeCorrectionFac = std::min(stepsizeCorrectionFac, Float(1)/(upper-lower));
 
-        while (true) { 
+        int from, to;
+        Float val, propRatio;
+        newstate->constraint.step(rnd, newstate->stepsizeCorrectionFac, from, to, val, propRatio);
+
+        //while (true) { 
             
-            int from = std::min(int(rnd.nextFloat()*nBins), nBins-1);
-            int to   = std::min(int(rnd.nextFloat()*nBins), nBins-1);
-            Float val = newstate->stepsizeCorrectionFac*rnd.nextFloat();
+            //int from = std::min(int(rnd.nextFloat()*nBins), nBins-1);
+            //int to   = std::min(int(rnd.nextFloat()*nBins), nBins-1);
+            //Float val = newstate->stepsizeCorrectionFac*rnd.nextFloat();
 
-            if ( newstate->moveMass(from, to, val)) { //move allowed
+            //if ( newstate->moveMass(from, to, val)) { //move allowed
 
-                Float newVol = newstate->accessibleStateVol(newstate->stepsizeCorrectionFac);
-                Float oldVol = newVol - newstate->accessibleStateVolCorrection(newstate->stepsizeCorrectionFac, from, to, val);
+                //Float newVol = newstate->accessibleStateVol(newstate->stepsizeCorrectionFac);
+                //Float oldVol = newVol - newstate->accessibleStateVolCorrection(newstate->stepsizeCorrectionFac, from, to, val);
 
                 /* the trans. probs q_ij from state i to state q are not symmetric, but obey
                  * q_ij  vol(reached from i) = q_ji  vol(reached from j) 
@@ -97,7 +108,7 @@ public:
                  *
                  * therefore, the factor q_ji/q_ij for the acceptance prob for going i->j is vol(from i)/vol(from j) = oldVol/newVol */
 
-                Float propRatio = oldVol/newVol;
+                //Float propRatio = oldVol/newVol;
                 //float propRatio = 1;
 
                 /* each pt contribute log( p_i) to log likelihood. 
@@ -133,13 +144,17 @@ public:
                 newstate->loglike = enoki::hsum(loglike_prop_packet);
 
                 return Proposal{newstate, propRatio};
-            }
-        }
+            //}
+        //}
 
     }
 
     std::shared_ptr<SubspaceState> copy() const override {
-        return std::shared_ptr<SubspaceState>(new PiecewiseConstantPDF(*this));
+        auto foo = new PiecewiseConstantPDF(*this);
+        auto& f = foo->getCoordsAt("pdf");
+        foo->constraint.link(&f);
+        //foo->constraint.link(&(foo->getCoords()[0]));
+        return std::shared_ptr<SubspaceState>(foo);
     }
 
 private:
@@ -152,29 +167,6 @@ private:
         return lower + (i+Float(0.5))*binwidth;
     }
 
-    bool moveMass(int from, int to, Float val) { 
-
-        if (from == to) return false;
-
-        if (coords[0][from] < val) return false;
-
-        coords[0][to] += val;
-        coords[0][from] -= val;
-
-        return true;
-    }
-
-    Float accessibleStateVol(Float propMassDistWidth) const { 
-        Float ret = 0;
-        for (auto f : coords[0]) 
-            ret += std::min(f, propMassDistWidth);
-        return ret;
-    }
-
-    /* returns the difference of the above function and the value it would have yielded before calling moveMass with the params given here */
-    Float accessibleStateVolCorrection(Float propMassDistWidth, int from, int to, Float val) const {
-        return std::min(propMassDistWidth, coords[0][from]) + std::min(propMassDistWidth, coords[0][to]) - std::min(propMassDistWidth, coords[0][from]+val) - std::min(propMassDistWidth, coords[0][to]-val);
-    }
 
     FloatP prob_of_measurement(int packet) const {
         FloatP sigi = enoki::packet(data.sig, packet) + 0.000001;
@@ -192,6 +184,142 @@ private:
 
 };
 
+
+class GaussianMixturePDF : public SubspaceState {
+
+private: 
+
+    SumConstraint constraintAmplitudes;
+
+public: 
+
+    Float lower, upper;
+    size_t nModes;
+    Float minSigma;
+    Float maxSigma;
+
+    GaussianMixturePDF(const ProbabilityDistributionSamples& data, Float lower, Float upper, size_t nModes) :
+        SubspaceState({"A", "mu", "sig", "nNonzeroModes"}, 1, false), constraintAmplitudes(1), lower(lower), upper(upper), nModes(nModes), data(data) {
+
+        minSigma = (upper-lower)/50;
+        maxSigma = (upper-lower)*4;
+        setCoords({std::vector<Float>(nModes, Float(1)/(nModes)), 
+                    std::vector<Float>(nModes, 0), 
+                     std::vector<Float>(nModes, (upper-lower)/std::min(size_t(4), nModes)), std::vector<Float>(1,nModes)}); 
+
+        for (size_t i = 0; i < nModes; ++i) 
+            coords[1][i] = lower + (i+0.5)*(upper-lower)/(nModes);
+
+    }
+
+    void eval(const SharedParams& shared) override {
+
+        FloatP loglikeP(0);
+
+        for (size_t i = 0; i < enoki::packets(data.y); ++i) { 
+
+            FloatP p_i(0); 
+            for (size_t m = 0; m < nModes; ++m) {
+                FloatP var = enoki::packet(data.sig, i);
+                FloatP y   = enoki::packet(data.y, i);
+                FloatP arg = y - coords[1][m];
+                var *= var; 
+                var += coords[2][m]*coords[2][m];
+                p_i += coords[0][m]/(enoki::sqrt(2*Float(3.14159265)*var))*enoki::exp(-arg*arg/(2*var));
+            }
+            loglikeP += enoki::log(p_i);
+        };
+
+        loglike = enoki::hsum(loglikeP);
+
+        coords[3][0] = 0;
+        for (size_t i = 0; i < nModes; ++i)
+            if (coords[0][i] > 0.005)
+                coords[3][0] += 1;
+
+    }
+
+    Proposal step(pcg32& rnd, const SharedParams& shared) const override {
+
+        auto newstate = std::dynamic_pointer_cast<GaussianMixturePDF>(copy());
+
+        Float propRatio = 1;
+
+        /* sometimes mix various steps (and sometimes make them larger) to help get unstuck. 
+         * an easy way (not the fastest, but let's not worry about this) is to loop through multiple times. 
+         * large steps are not often accepted but should be tried a lot to help convergence. */
+        int nSteps = rnd.nextFloat() * 10;
+
+        for (int k = 0; k < nSteps; ++k) {
+            Float stepkind = rnd.nextFloat();
+            Float ampstepthresh = 0.5;
+            Float otherthresh = 0.75;
+            if (nModes == 1) { 
+                ampstepthresh = -0.1;
+                otherthresh = 0.5;
+            }
+
+            if (stepkind < ampstepthresh) { 
+                int from, to;
+                Float val;
+                newstate->constraintAmplitudes.step(rnd, std::min(Float(0.1)*stepsizeCorrectionFac/nModes, Float(1.0)/nModes), from, to, val, propRatio);
+            }
+            else {
+
+                //for (size_t i = 0; i < 1; ++i) { 
+
+                    size_t whichMode = std::min(size_t(rnd.nextFloat()*nModes), nModes-1);
+
+                    if (stepkind < otherthresh) {
+
+                        /* move at most by upper-lower (times 0.5) */
+                        newstate->coords[1][whichMode] += (rnd.nextFloat()-0.5)*(upper-lower)*0.6*std::min(stepsizeCorrectionFac, Float(1));
+
+                        /* reflect at boundary, based on the previous comment */
+                        if (newstate->coords[1][whichMode] < lower) 
+                            newstate->coords[1][whichMode] = lower + (lower - newstate->coords[1][whichMode]);
+                        else if (newstate->coords[1][whichMode] > upper) 
+                            newstate->coords[1][whichMode] = upper - (newstate->coords[1][whichMode] - upper);
+
+                    }
+                    else {
+
+                        /*sometimes attempt large step: sigma might run away to too large values while amplitude is small, and then amplitude is stuck at 0
+                         * if the data follows a narrowly peaked distribution. 
+                         * it is important to be able to have a shortcut to small sigma so amplitude can raise again in that case */
+                        if (rnd.nextFloat() < 0.1f)
+                            newstate->coords[2][whichMode] += (rnd.nextFloat()-0.5)*(maxSigma-minSigma)*std::min(stepsizeCorrectionFac, Float(1));
+                        else
+                            newstate->coords[2][whichMode] += (rnd.nextFloat()-0.5)*(maxSigma-minSigma)*0.05*std::min(stepsizeCorrectionFac, Float(1));
+
+                        /*reflect at boundaries */
+                        if (newstate->coords[2][whichMode] < minSigma) 
+                            newstate->coords[2][whichMode] = minSigma + (minSigma - newstate->coords[2][whichMode]);
+                        else if (newstate->coords[2][whichMode] > maxSigma) 
+                            newstate->coords[2][whichMode] = maxSigma - (newstate->coords[2][whichMode] - maxSigma);
+                    }
+                //}
+            }
+        }
+
+        newstate->eval(shared); 
+        
+        return Proposal{newstate, propRatio};
+
+    }
+
+    std::shared_ptr<SubspaceState> copy() const override {
+        auto foo = new GaussianMixturePDF(*this);
+        auto& f = foo->getCoordsAt("A");
+        foo->constraintAmplitudes.link(&f);
+        //foo->constraint.link(&(foo->getCoords()[0]));
+        return std::shared_ptr<SubspaceState>(foo);
+    }
+private:
+
+    const ProbabilityDistributionSamples& data;
+
+};
 
 
 #endif

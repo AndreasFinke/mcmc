@@ -48,6 +48,16 @@ PYBIND11_MODULE(mcmc, m) {
         //.def(py::init<std::map<std::string, int>>());
     py::class_<MyLike1, SubspaceState, std::shared_ptr<MyLike1>>(m, "MyLike1")
         .def(py::init<>());
+
+    py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
+        .def(py::init<>());
+    py::class_<B, SubspaceState, std::shared_ptr<B>>(m, "B")
+        .def(py::init<>());
+    py::class_<C, SubspaceState, std::shared_ptr<C>>(m, "C")
+        .def(py::init<>());
+    py::class_<D, SubspaceState, std::shared_ptr<D>>(m, "D")
+        .def(py::init<>());
+
     py::class_<SmoothnessPrior, SubspaceState, std::shared_ptr<SmoothnessPrior>>(m, "SmoothnessPrior")
         .def(py::init<const std::string&, Float, Float, Float>());
     py::class_<State, std::shared_ptr<State>>(m, "State")
@@ -68,6 +78,8 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<py::array_t<Float>, py::array_t<Float>>());
     py::class_<PiecewiseConstantPDF, SubspaceState, std::shared_ptr<PiecewiseConstantPDF>>(m, "PiecewiseConstantPDF")
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, int>());
+    py::class_<GaussianMixturePDF, SubspaceState, std::shared_ptr<GaussianMixturePDF>>(m, "GaussianMixturePDF")
+        .def(py::init<const ProbabilityDistributionSamples&, Float, Float, size_t>());
     py::class_<MetropolisChain>(m, "Chain")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<SimpleTarget>, int>())
