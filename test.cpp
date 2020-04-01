@@ -15,6 +15,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "distfind.h"
+#include "covid.h"
 
 namespace py = pybind11;
 
@@ -46,8 +47,32 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<SubspaceState, std::shared_ptr<SubspaceState>>(m, "SubspaceState")
         .def("getNames", &SubspaceState::getNames);
         //.def(py::init<std::map<std::string, int>>());
-    py::class_<MyLike1, SubspaceState, std::shared_ptr<MyLike1>>(m, "MyLike1")
-        .def(py::init<>());
+    py::class_<DiseaseData>(m, "DiseaseData")
+        .def(py::init<const py::array_t<Float>, const py::array_t<Float>>());
+    py::class_<DiseaseParams>(m, "DiseaseParams")
+        .def(py::init<>())
+        .def_readwrite("probLethal", &DiseaseParams::probLethal)
+        .def_readwrite("probLethalDailyWhenSeriousUntreated", &DiseaseParams::probLethalDailyWhenSeriousUntreated);
+    py::class_<AvgDiseaseTrajectory>(m, "AvgDiseaseTrajectory")
+        .def(py::init<const DiseaseParams&>())
+        .def("getIncubating", &AvgDiseaseTrajectory::getIncubating)
+        .def("getAsymptomatic", &AvgDiseaseTrajectory::getAsymptomatic)
+        .def("getMild", &AvgDiseaseTrajectory::getMild)
+        .def("getMildlyInfectious", &AvgDiseaseTrajectory::getMildlyInfectious)
+        .def("getHighlyInfectious", &AvgDiseaseTrajectory::getHighlyInfectious)
+        .def("getSerious", &AvgDiseaseTrajectory::getSerious)
+        .def("getDead", &AvgDiseaseTrajectory::getDead)
+        .def("getRecovered", &AvgDiseaseTrajectory::getRecovered)
+        .def_readwrite("incubating", &AvgDiseaseTrajectory::incubating)
+        .def_readwrite("asymptomatic", &AvgDiseaseTrajectory::asymptomatic)
+        .def_readwrite("mild", &AvgDiseaseTrajectory::mild)
+        .def_readwrite("infectiousMild", &AvgDiseaseTrajectory::infectiousMild)
+        .def_readwrite("infectiousHigh", &AvgDiseaseTrajectory::infectiousHigh)
+        .def_readwrite("serious", &AvgDiseaseTrajectory::serious)
+        .def_readwrite("dead", &AvgDiseaseTrajectory::dead)
+        .def_readwrite("recovered", &AvgDiseaseTrajectory::recovered);
+    py::class_<DiseaseSpread, SubspaceState, std::shared_ptr<DiseaseSpread>>(m, "DiseaseSpread")
+        .def(py::init<const DiseaseData&, const DiseaseParams&, int, double, double, int, size_t>());
 
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
         .def(py::init<>());
@@ -84,9 +109,12 @@ PYBIND11_MODULE(mcmc, m) {
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<SimpleTarget>, int>())
         .def("run", &MetropolisChain::run)
+        .def("getMean", &MetropolisChain::getMean)
         .def("getSamples", &MetropolisChain::getSamples)
         .def("getWeights", &MetropolisChain::getWeights)
-        .def("getLoglikes", &MetropolisChain::getLoglikes);
+        .def("getLoglikes", &MetropolisChain::getLoglikes)
+        .def_readwrite("computeMean", &MetropolisChain::computeMean)
+        .def_readwrite("recordSamples", &MetropolisChain::recordSamples);
         //.def_readwrite("Lsmooth", &Sampler::Lsmooth);
     //py::class_<Dist>(m, "Dist")
         //.def(py::init<int, float, float>())

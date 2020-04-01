@@ -17,6 +17,9 @@ bool verbose = false;
 #include <list>
 #include <type_traits>
 
+#include <cmath>
+
+#include "enoki/special.h"
 #include "timer.h"
 #include "pcg32.h"
 
@@ -28,7 +31,17 @@ namespace py = pybind11;
 
 #endif
 
-using Float = float;
+using Float = double;
+
+template <typename T> T toNormal(T uniform) {
+    return Float(M_SQRT2) * enoki::erfinv(Float(2) * uniform - Float(1));
+}
+
+template <typename T> void bound(T& val, T lower, T upper) {
+    val = T(0.5)*(val-lower)/(upper-lower);
+    val = T(2)*std::abs(val-std::round(val));
+    val = lower + val*(upper-lower);
+}
 
 #define HAS_STEP std::shared_ptr<SubspaceState> copy() const override {\
     return std::make_shared<std::remove_const_t<std::remove_reference_t<decltype(*this)>>>(*this);}
@@ -94,6 +107,7 @@ public:
     virtual ~SubspaceState() {};
 
     inline auto& getCoords()  { return coords; }
+    inline const auto& getCoords() const { return coords; }
 
     inline std::optional<std::vector<Float>> getCoords(const std::string name) const {
         auto it = names.find(name);
@@ -240,6 +254,32 @@ public:
 
     void add(const std::shared_ptr<SubspaceState>& s) { state.push_back(s); } 
 
+    void addCoordsOf(const std::shared_ptr<State>& s) {
+        for (size_t i = 0; i < state.size(); ++i) {
+            for (size_t j = 0; j < state[i]->getCoords().size(); ++j) {
+                for (size_t k = 0; k < state[i]->getCoords()[j].size(); ++k) { 
+                    state[i]->getCoords()[j][k] += s->state[i]->getCoords()[j][k];
+                }
+            }
+        }
+    }
+    void multCoordsBy(Float a) {
+        for (size_t i = 0; i < state.size(); ++i) {
+            for (size_t j = 0; j < state[i]->getCoords().size(); ++j) {
+                for (size_t k = 0; k < state[i]->getCoords()[j].size(); ++k) { 
+                    state[i]->getCoords()[j][k] *= a;
+                }
+            }
+        }
+    }
+
+    std::shared_ptr<State> deep_copy() {
+        State ret(*this); //shallow copy as needed when collecting samples 
+        for (auto& s : ret.state) 
+            s = s->copy(); 
+        return std::make_shared<State>(ret);
+    }
+
     /* Warning: no smart dependency resolution here! That's fine for initialization.
      * During stepping this function will not be called. */
     void eval() {
@@ -333,9 +373,10 @@ public:
             }
         }
 
-            
         /* now can evalute likelihoods */ 
+        std::cout << "First evaluation of complete likelihood...\n";
         eval();
+        std::cout << "... done.\n";
 
         /* remember we did this */
         isInitialized = true;
@@ -610,12 +651,16 @@ class MetropolisChain {
 
 public:
 
+    bool computeMean = false;
+    bool recordSamples = true;
     int id; 
     pcg32 rnd;
     std::shared_ptr<SimpleTarget> target;
 
-    MetropolisChain(std::shared_ptr<SimpleTarget> target, int chainid) : id(chainid), rnd(0, chainid), target(std::move(target)) {
-
+    MetropolisChain(std::shared_ptr<SimpleTarget> targetArg, int chainid) : id(chainid), rnd(0, chainid), target(std::move(targetArg)) {
+        if (verbose)
+            std::cout << "Constructing chain\n";
+        mean = target->state->deep_copy();
     }
 
     void run(int nSamples, int nBurnin, int nAdjust, int thinning = 100) {
@@ -700,10 +745,32 @@ public:
 
 
             }
-            if ((i > nBurnin) && (i % thinning) == 0) 
-                samples.push_back(std::make_shared<State>(*(target->state)));
+            if ((i > nBurnin) && (i % thinning) == 0 && recordSamples) 
+                samples.push_back(std::make_shared<State>(*(target->state))); 
+            if ((i > nBurnin) && computeMean)
+                mean->addCoordsOf(target->state);
+
+            if (!recordSamples) { /* noticed slowdown almost 2x when *not* saving samples. This seems to 
+                                     be due to many immediate deletes of subspace states when share_ptrs go 
+                                     out of scope. Avoid this by collecting some and deleting them at once. 
+                                     On my system (Mac Catalina) this resolved the issue. */ 
+                static std::vector<std::shared_ptr<State>> garbage;
+                const int nGarbage = 5000;
+                static int curr = 0;
+                if (curr < nGarbage) 
+                    garbage.push_back(std::make_shared<State>(*(target->state)));
+                else if (curr == nGarbage) {
+                    curr = -1;
+                    garbage = {};
+                }
+                curr++;
+            }
+
         }
         STOP_TIMER;
+
+        if (computeMean) 
+            mean->multCoordsBy(Float(1)/(nAdjust+nSamples-nBurnin));
 
         std::cout << "\n\nChain " << id << " finished, acceptance rate was " << Float(nAccept)/(nBurnin+nSamples) << ".\n";
 
@@ -713,6 +780,19 @@ public:
 
 #if PY == 1
 
+    py::array_t<Float> getMean(const std::string& coordName) {
+
+        if (!computeMean)
+            std::cout << "Requested mean, but MetropolisChain::computeMean is false\n";
+
+        auto data = mean->getCoords(coordName); 
+
+        py::array_t<Float> ret(data.size());
+            
+        std::memcpy(ret.mutable_data(), &(data[0]), sizeof(Float)*data.size());
+
+        return ret;
+    }
     py::array_t<Float> getSamples(const std::string& coordName) {
 
         if (samples.size() == 0) { 
@@ -774,6 +854,7 @@ public:
 protected:
 
     std::vector< std::shared_ptr<State> > samples;
+    std::shared_ptr<State> mean;
 
 };
 

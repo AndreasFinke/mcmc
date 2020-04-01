@@ -15,7 +15,7 @@
 #include <enoki/special.h>
 
 constexpr int PACKET_SIZE = 16;
-using FloatP = enoki::Packet<float, PACKET_SIZE>;
+using FloatP = enoki::Packet<Float, PACKET_SIZE>;
 using FloatX = enoki::DynamicArray<FloatP>;
 
 #if PY == 1
@@ -130,13 +130,13 @@ public:
                 FloatP loglike_prop_packet(0);
                 for (size_t i = 0; i < enoki::packets(data.y); ++i) { 
 
-                    FloatP sigi = enoki::packet(data.sig, i) + 0.000001;
+                    FloatP sigi = enoki::packet(data.sig, i) + Float(0.000001);
                     FloatP invsig = 1/sigi;
                     FloatP f = invsig * Float(0.70710678118);
                     FloatP dto = binpos(to) - enoki::packet(data.y,i);
                     FloatP dfrom = binpos(from) - enoki::packet(data.y,i); 
                     Float hw = binwidth*Float(0.5);
-                    enoki::packet(newstate->pconv,i) = enoki::packet(pconv,i) + 0.5f*val*(enoki::erf((dto+hw)*f) - enoki::erf((dto-hw)*f) - enoki::erf((dfrom+hw)*f) + enoki::erf((dfrom-hw)*f));
+                    enoki::packet(newstate->pconv,i) = enoki::packet(pconv,i) + Float(0.5)*val*(enoki::erf((dto+hw)*f) - enoki::erf((dto-hw)*f) - enoki::erf((dfrom+hw)*f) + enoki::erf((dfrom-hw)*f));
 
                     loglike_prop_packet += enoki::log(enoki::packet(newstate->pconv,i));
                 }
