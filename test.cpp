@@ -48,10 +48,27 @@ PYBIND11_MODULE(mcmc, m) {
         .def("getNames", &SubspaceState::getNames);
         //.def(py::init<std::map<std::string, int>>());
     py::class_<DiseaseData>(m, "DiseaseData")
-        .def(py::init<const py::array_t<Float>, const py::array_t<Float>>());
+        .def(py::init<const py::array_t<Float>, const py::array_t<Float>>())
+        .def_readwrite("initialBetaMild", &DiseaseData::initialBetaMild)
+        .def_readwrite("initialBetaHigh", &DiseaseData::initialBetaHigh)
+        .def_readwrite("initialDelay", &DiseaseData::initialDelay)
+        .def_readwrite("fixBehaviorInAdvance", &DiseaseData::fixBehaviorInAdvance);
     py::class_<DiseaseParams>(m, "DiseaseParams")
         .def(py::init<>())
+        .def_readwrite("probAsymp", &DiseaseParams::probAsymp)
         .def_readwrite("probLethal", &DiseaseParams::probLethal)
+        .def_readwrite("probSerious", &DiseaseParams::probSerious)
+        .def_readwrite("probICUIfSerious", &DiseaseParams::probSerious)
+        .def_readwrite("timeIncub", &DiseaseParams::timeIncub)
+        .def_readwrite("timeIncubSigma", &DiseaseParams::timeIncubSigma)
+        .def_readwrite("timeMildDuration", &DiseaseParams::timeMildDuration)
+        .def_readwrite("timeMildDurationSigma", &DiseaseParams::timeMildDurationSigma)
+        .def_readwrite("timeMildToSerious", &DiseaseParams::timeMildToSerious)
+        .def_readwrite("timeMildToSeriousSigma", &DiseaseParams::timeMildToSeriousSigma)
+        .def_readwrite("timeSeriousToRecovered", &DiseaseParams::timeSeriousToRec)
+        .def_readwrite("timeSeriousToRecoveredSigma", &DiseaseParams::timeSeriousToRecSigma)
+        .def_readwrite("timeSeriousToDeath", &DiseaseParams::timeSeriousToDeath)
+        .def_readwrite("timeSeriousToDeathSigma", &DiseaseParams::timeSeriousToDeathSigma)
         .def_readwrite("probLethalDailyWhenSeriousUntreated", &DiseaseParams::probLethalDailyWhenSeriousUntreated);
     py::class_<AvgDiseaseTrajectory>(m, "AvgDiseaseTrajectory")
         .def(py::init<const DiseaseParams&>())
@@ -84,11 +101,15 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<>());
 
     py::class_<SmoothnessPrior, SubspaceState, std::shared_ptr<SmoothnessPrior>>(m, "SmoothnessPrior")
-        .def(py::init<const std::string&, Float, Float, Float>());
+        .def(py::init<const std::string&, Float, Float>());
     py::class_<State, std::shared_ptr<State>>(m, "State")
         .def(py::init<>())
         .def("add", &State::add)
         .def("init", &State::init)
+        .def("loglike", &State::loglikelihood)
+        .def("force_bounds", &State::force_bounds)
+        .def("getAll", &State::getAll)
+        .def("test", &State::test)
         .def_readwrite("sharedDependencyMaxDepth", &State::sharedDependencyMaxDepth);
     py::class_<MyState, State, std::shared_ptr<MyState>>(m, "MyState")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
@@ -115,6 +136,12 @@ PYBIND11_MODULE(mcmc, m) {
         .def("getLoglikes", &MetropolisChain::getLoglikes)
         .def_readwrite("computeMean", &MetropolisChain::computeMean)
         .def_readwrite("recordSamples", &MetropolisChain::recordSamples);
+    py::class_<GradientDecent>(m, "GradientDecent")
+        //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
+        .def(py::init<std::shared_ptr<State>>())
+        .def("decent", &GradientDecent::decent)
+        .def("perturb", &GradientDecent::perturb)
+        .def_readwrite("learningRate", &GradientDecent::learningRate);
         //.def_readwrite("Lsmooth", &Sampler::Lsmooth);
     //py::class_<Dist>(m, "Dist")
         //.def(py::init<int, float, float>())

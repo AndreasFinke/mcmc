@@ -14,6 +14,7 @@ bool verbose = false;
 #include <memory>
 #include <map>
 #include <unordered_set>
+#include <set>
 #include <list>
 #include <type_traits>
 
@@ -53,21 +54,20 @@ class State;
 class SubspaceState {
 
 friend class State;
+friend class GradientDecent;
 
 public:
 
     Float loglike = 0;
     Float stepsizeCorrectionFac = 1;
     bool derivedOnShared;
+    std::set<std::pair<size_t, size_t>> fixed = {};
 
     SubspaceState(std::vector<std::string>&& coordNames, bool derivedParamsDependOnSharedParams = false, size_t nDerived = 0) :  derivedOnShared(derivedParamsDependOnSharedParams), nDerived(nDerived) {  
         for (size_t i = 0; i < coordNames.size(); ++i) {
             names[coordNames[i]] = i;
         }
     } 
-    //SubspaceState(const SubspaceState& ss) : names(ss.names), coords(ss.coords), nDerived(ss.nDerived), stepsizeCorrectionFac(ss.stepsizeCorrectionFac) {
-    //} 
-
     /* derived class constructor must call this! */
     void setCoords(std::vector<std::vector<Float>> init) {
         coords = init;
@@ -76,23 +76,6 @@ public:
 
     /* the second number is the pij/pji correction factor for the MCMC */
     using Proposal = std::pair<std::shared_ptr<SubspaceState>, Float>;
-
-    /* evaluate likelihood, update loglike and derived parameters, update shared parameters that are owned by this likelihood
-     * to the values that were modified by stepping (the coords) or that have otherwise been evaluated (last nDerived vectors of coords array) */
-    //Float eval(SharedParams& shared) {
-
-        //eval_likelihood(shared);
-
-        //for (auto&& s : shared) {
-
-            //auto c = getCoords(s.first);
-            //if (c) 
-                //s.second = *c;
-
-        //}
-            
-        //return loglike;
-    //}
 
     /* derived class needs to implement these */
     virtual std::shared_ptr<SubspaceState> copy() const = 0;
@@ -104,6 +87,7 @@ public:
         auto newstate = copy();
         return Proposal{newstate, 1};
     }
+    virtual void force_bounds() {}
     virtual ~SubspaceState() {};
 
     inline auto& getCoords()  { return coords; }
@@ -122,6 +106,13 @@ public:
         return coords[names.at(name)]; 
     }
 
+    std::map<std::string, std::vector<Float>> getAll() {
+        std::map<std::string, std::vector<Float>> ret = {};
+        for (auto [name, idx] : names) 
+            ret[name] = coords[idx];
+        return ret;
+    }
+
     inline bool isDerived(const std::string name) const {
         auto it = names.find(name);
         if (it != names.end()) {
@@ -130,19 +121,14 @@ public:
         else
             return {};
     }
+
+    inline bool isFixed(std::pair<size_t, size_t> index) const {
+        return fixed.find(index) != fixed.end();
+    }
+
     auto getNames() const {
         return names;
     }
-
-
-    //inline Proposal step(pcg32& rnd, const SharedParams& shared) const {
-
-        //auto ret  = step_impl(rnd, shared);
-        //ret.first->eval_likelihood(shared);
-
-        //return ret;
-    //}
-
 
 
 protected:
@@ -161,28 +147,19 @@ protected:
     /* last nDerived coords are actually derived parameters TODO: need?*/
     size_t nDerived = 0;
 
-    //inline std::optional<std::vector<Float>> getSharedCoords(const SharedParams& shared, const std::string name) const {
-        //auto it = shared.find(name);
-        //if (it != shared.end()) {
-            //return it->second; 
-        //}
-        //else
-            //return {};
-    //}
-
 };
 
 class SmoothnessPrior : public SubspaceState {
 
 public:
-    SmoothnessPrior(const std::string& functionName, Float smoothnessScale, Float x1, Float x2) : SubspaceState({}), lower(x1), upper(x2), Lsmooth(smoothnessScale) {
+    SmoothnessPrior(const std::string& functionName, Float smoothnessScale, Float scale) : SubspaceState({}), L(scale), Lsmooth(smoothnessScale) {
 
         requestedSharedNames.push_back(functionName);
 
         /* no coords to set */
     }
 
-    Float lower, upper, Lsmooth; 
+    Float L, Lsmooth; 
     
     void eval(const SharedParams& shared) override {
 
@@ -192,7 +169,7 @@ public:
             //std::cout << "SmoothnessPrior cannot evaluate: " << requestedSharedNames[0] << " is not part of the shared parameters.\n";
             //return;
         //}
-        Float dx = (upper-lower)/f.size();  
+        Float dx = L/f.size();  
         loglike = 0;
         for (size_t i = 1; i < f.size()-1; ++i) { 
             Float dd = f[i+1] + f[i-1] - 2*f[i]; 
@@ -200,7 +177,7 @@ public:
 
         }
 
-        loglike *= Lsmooth*Lsmooth/(upper-lower);
+        loglike *= Lsmooth*Lsmooth/L;
     }
 
     //Proposal step_impl(pcg32& rnd, const SharedParams& shared) const override {
@@ -271,6 +248,34 @@ public:
                 }
             }
         }
+    }
+
+    void perturb(pcg32& rnd, Float a) {
+        for (size_t i = 0; i < state.size(); ++i) {
+            for (size_t j = 0; j < state[i]->getCoords().size(); ++j) {
+                for (size_t k = 0; k < state[i]->getCoords()[j].size(); ++k) { 
+                    state[i]->getCoords()[j][k] += (rnd.nextFloat()-.5f)*state[i]->getCoords()[j][k]*a;
+                }
+            }
+        }
+    }
+
+    void test(Float a) {
+        state[0]->getCoords()[4][0] += a;
+    }
+
+    std::map<std::string, std::vector<Float>> getAll() { 
+        std::map<std::string, std::vector<Float>> ret = {};
+        for (size_t i = 0; i < state.size(); ++i) { 
+            auto r = state[i]->getAll();
+            ret.insert(r.begin(), r.end());
+        }
+        return ret;
+    }
+
+    void force_bounds() {
+        for (size_t i = 0; i < state.size(); ++i) 
+            state[i]->force_bounds();
     }
 
     std::shared_ptr<State> deep_copy() {
@@ -508,6 +513,47 @@ public:
 
     }
 
+    /* assuming only the changed element of the "state" array of SubspaceStates has changed, evaluate only what is needed. 
+     * This is the same algorithm as above in the step function, but here we do not need and therefore do not want to copy the 
+     * relevant dependent SubspaceStates but modify them in place. It is easiest to write a new, similar function because of slight differences throughout... for comments see above */
+    void eval_graph(size_t changed) {
+        //std::map<size_t, std::shared_ptr<SubspaceState>> dependent;
+
+        if (verbose) 
+            std::cout << "Constructing schedule (eval_graph).\n";
+
+        std::list<std::pair<size_t, std::shared_ptr<SubspaceState>>> schedule{};
+        schedule.push_back(std::make_pair(changed, state[changed]));
+
+        auto it = schedule.begin();
+        const size_t MAX_DEPTH = 1000;
+        size_t depth = 1;
+        while (it != schedule.end()) {
+            auto& currentDependencies = dependencies[it->first];
+            for (size_t i = 0; i < currentDependencies.size(); ++i) 
+                if (currentDependencies[i].second || it == schedule.begin() )  {
+                    size_t which = currentDependencies[i].first;
+                    schedule.push_back(std::make_pair(which, state[which]));
+                }
+            ++it; ++depth;
+            if (depth > MAX_DEPTH)  { 
+                std::cout << "WARNING: Breaking what looks like infinite dependency loop of derived parameters between different likelihood parts.\n";
+                break;
+            }
+        }
+
+        if (verbose) { 
+            std::cout<< "\nSchedule is:\n";
+            for (auto& task : schedule)
+                std::cout << task.first << " " << & (*(task.second)) << "\n";
+        }
+        /* here we cannot assume the first SubspaceState is already evaluated since we did not step */
+        for (auto it = schedule.begin(); it != schedule.end(); ++it) { 
+            it->second->eval(shared);
+            update_shared(shared, it->second);
+        }
+    }
+
     void accept(const ProposalRecord& rec) {
         shared = rec.shared_prop;
         
@@ -567,7 +613,8 @@ public:
     void set_posterior(std::shared_ptr<State> s) { 
         
         try {
-            s->init();
+            if (!s->isInitialized)
+                s->init();
             state = s; 
             state->weight = weight();
 
@@ -858,6 +905,72 @@ protected:
 
 };
 
+class GradientDecent {
+
+public:
+
+    GradientDecent(const std::shared_ptr<State>& state) : state(state) {
+
+        if (!state->isInitialized)
+            state->init();
+
+        grad = state->deep_copy();
+
+        for (size_t i = 0; i < grad->state.size(); ++i) { 
+            //for (size_t j = grad->state.size() - grad->state[i]->nDerived; j < grad->state[i]->coords.size(); ++j) { 
+            /* there may be fixed parameters that are not derived, they also need to be zeroed...*/
+            for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
+                grad->state[i]->coords[j].assign(grad->state[i]->coords[j].size(), Float(0));  
+            }
+        }
+    } 
+
+    void decent() {
+        Float loglikeold = state->loglikelihood();
+        for (size_t i = 0; i < grad->state.size(); ++i) { 
+            for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
+                /* only compute gradient of independent unfixed coords */
+                if (j >= grad->state[i]->coords.size() - grad->state[i]->nDerived)
+                    break;
+                for (size_t k = 0; k < grad->state[i]->coords[j].size(); ++k) { 
+
+                    if (grad->state[i]->isFixed(std::make_pair(j, k))) {
+                        continue;
+                    }
+
+                    state->state[i]->coords[j][k] += epsilon;
+                    state->eval_graph(i);
+                    Float loglikenew = state->loglikelihood();
+                    state->state[i]->coords[j][k] -= epsilon;
+                    //state->eval_graph(i);
+                    grad->state[i]->coords[j][k] = (loglikenew-loglikeold)/epsilon;
+                }
+            }
+            /* before changing i, reset state to old (including shared params...) */
+            state->eval_graph(i);
+        }
+
+        grad->multCoordsBy(learningRate);
+        state->addCoordsOf(grad);
+        //state->force_bounds();
+
+    }
+
+    void perturb(Float a) {
+        state->perturb(rnd, a);
+    }
+
+    Float learningRate = 1;
+
+private:
+
+    pcg32 rnd;
+
+    Float epsilon = 0.00001;
+    std::shared_ptr<State> state;
+    std::shared_ptr<State> grad;
+
+};
 
 class SumConstraint {
 public: 

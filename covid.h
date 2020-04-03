@@ -34,21 +34,26 @@ public:
 
         for (size_t i = 0; i < discontinuousDays.size(); ++i) {
             discontinuousDays[i] = std::round(dis(0, i));
-            if (dis(1, i) >= 0) { // treat as given fixed param
-                discontinuousValsFixed[i]  = true;
-                discontinuousVals[i]  = dis(1, i);
+            discontinuousVals[i]  = dis(1, i);
+            if (dis(2, i) >= 0) { // treat as given fixed param
+                discontinuousValsFixed[i]  = false;
             }
             else {
-                discontinuousValsFixed[i]  = false;
-                discontinuousVals[i]  = 0;
+                discontinuousValsFixed[i]  = true;
             }
         }
     }
 
     std::vector<Float> deathsPerDay, deathsSigma;
-    std::vector<size_t> discontinuousDays;
+    std::vector<int> discontinuousDays;
     std::vector<Float> discontinuousVals;
     std::vector<bool> discontinuousValsFixed;
+    
+    Float initialBetaMild = 2;
+    Float initialBetaHigh = 7;
+    Float initialDelay = 14;
+
+    int fixBehaviorInAdvance = 14;
 };
 
 class DiseaseParams {
@@ -73,6 +78,7 @@ public:
     Float probSerious = 0.08; /* but not lethal */
     Float probLethal = 0.004;
     Float probLethalDailyWhenSeriousUntreated = 0.2;
+    Float probICUIfSerious = 0.3;
     /* probMild = 1 - probAsymp - probSerious - probLethal */
     Float timeMildDuration = 10;
     Float timeMildDurationSigma = 5;
@@ -82,6 +88,7 @@ public:
     Float timeSeriousToRecSigma = 5;
     Float timeSeriousToDeath = 9;
     Float timeSeriousToDeathSigma = 5;
+
 
 };
 
@@ -111,12 +118,18 @@ public:
                 asymptomatic[t2i(t+t2)] -= 1;
                 recovered[t2i(t+t2)] += 1;
                 infectiousHigh[t2i(t+t2)] -= 1; // for now 
-            } else { /* mild */
+            } else { /* mild (at first)  */
 
                 mild[t2i(t)] += 1;
                 infectiousMild[t2i(t)] += 1;
-                /* remaining mild */
+
+                /* however, one day before (highly) infectious while incubating! */
+                if (t2i(t) - 1 > 0) {
+                    infectiousHigh[t2i(t) - 1] += 1;
+                    infectiousHigh[t2i(t)] -= 1;
+                }
                 double x = rnd.nextDouble();
+                /* remaining mild */
                 if (x < 1 - (p.probSerious + p.probLethal)/(1 - p.probAsymp)) {
                     /* sample recovery */
                     double t2 = sampleTime(rnd, p.timeMildDuration, p.timeMildDurationSigma);
@@ -147,7 +160,7 @@ public:
              * lethal with probLelthal/(probLethal+probSerious) and recovery with prob probSerious(probLethal+probSerious) 
              * (indeed, above prob cond on not asympt. for serious outcome is (probLethal+probSerious)/(1-probAsymp), and we divide 
              * the individual probLethal/(1-probAsymp) and probSerious/(1-probAsymp) by this.) */
-            
+   
             double t3;
             double x = rnd.nextDouble(); 
             seriousFromSerious[0] += 1;
@@ -257,8 +270,8 @@ private:
         return expmu*std::exp(n);
     }
 
-    size_t t2i(double t) const {
-        size_t ret = size_t(nGrid*(t/nDays));
+    int t2i(double t) const {
+        int ret = size_t(nGrid*(t/nDays));
         if (ret > nGrid-1) {
             std::cout << "Increase nDays! (t=" << t << ")\n";
             return nGrid-1;
@@ -275,17 +288,17 @@ public:
     const DiseaseData& data;
     const DiseaseParams& params;
     AvgDiseaseTrajectory traj; 
-    size_t nPredictDays, maxDelayDaysTilData;
+    int nPredictDays, maxDelayDaysTilData;
     int popSize;
 
-    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousVals", "betaMild", "betaHigh", "delay", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity"}, 9, false), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
-  
+    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousVals", "betaMild", "betaHigh", "delay", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior"}, false, 10), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
+ 
         //requestedSharedNames = {};
         size_t nDaysTotal = maxDelayDaysTilData + nPredictDays + data.deathsPerDay.size();
 
-        setCoords( {std::vector(nDaysTotal, Float(1)),
+        setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
                 data.discontinuousVals, 
-                {Float(0.1)}, {Float(0.1)}, {Float(10.0)},
+                {data.initialBetaMild}, {data.initialBetaHigh}, {data.initialDelay},
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
@@ -294,107 +307,131 @@ public:
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
-                std::vector(nDaysTotal, Float(0))} );
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(1))} );
 
         for (int i = 0; i < nDaysTotal; ++i) 
             getCoordsAt("capacity")[i] = cap0 + std::max(capIncrRate*(i-maxDelayDaysTilData), Float(0.0));
+
+        for (size_t i = 0; i < data.discontinuousValsFixed.size(); ++i) { 
+            if (data.discontinuousValsFixed[i]) { 
+                fixed.insert(std::make_pair(1, i));
+            }
+        }
     }
 
     ~DiseaseSpread() {} 
 
     void eval(const SharedParams& shared) override {
 
+        size_t size = getCoordsAt("dead").size();
+
         loglike = 0;
 
-        size_t size = getCoordsAt("dead").size();
-        /* null old results */
-        getCoordsAt("mildlyInfectious").assign(size, Float(0));
-        getCoordsAt("highlyInfectious").assign(size, Float(0));
-        getCoordsAt("incubating").assign(size, Float(0));
-        getCoordsAt("asymptomatic").assign(size, Float(0));
-        getCoordsAt("mild").assign(size, Float(0));
-        getCoordsAt("serious").assign(size, Float(0));
-        getCoordsAt("recovered").assign(size, Float(0));
-        getCoordsAt("dead").assign(size, Float(0));
+        int start = maxDelayDaysTilData - getCoordsAt("delay")[0];
+        Float fractionalDelay = maxDelayDaysTilData - getCoordsAt("delay")[0] - start;
+        auto shift_weight = [&] (int shift) -> Float { return (1-shift)*(1-fractionalDelay) + shift*fractionalDelay; };
+        
+        for (int shift = 1; shift >= 0; --shift) { 
 
-        /* Patient Zero. Treated as highly infectious on first day and like an average case afterwards, including mildly infectious trajectories, 
-         * for simplicity. */
-        double newlyInfected = 1;
-        size_t start = maxDelayDaysTilData - getCoordsAt("delay")[0];
+            /* Patient Zero. Treated as highly infectious on first day and like an average case afterwards, including mildly infectious trajectories, 
+             * for simplicity. */
+            double newlyInfected = 1;
+            /* null old results */
+            getCoordsAt("mildlyInfectious").assign(size, Float(0));
+            getCoordsAt("highlyInfectious").assign(size, Float(0));
+            getCoordsAt("incubating").assign(size, Float(0));
+            getCoordsAt("asymptomatic").assign(size, Float(0));
+            getCoordsAt("mild").assign(size, Float(0));
+            getCoordsAt("serious").assign(size, Float(0));
+            getCoordsAt("recovered").assign(size, Float(0));
+            getCoordsAt("dead").assign(size, Float(0));
+            getCoordsAt("totalBehavior").assign(size, Float(1));
+            for (int i = start+shift; i < size; ++i) {
 
-        for (size_t i = start; i < size; ++i) {
+                /* helper function distributing source on dest starting at k with factor n */
+                auto project = [&](size_t k, auto& dest, const auto& source, double n) {
+                    double cumsum = 0;
+                    for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
+                    //std::cout << "dest.size = " << dest.size() << " d = " << d << " k = " << k << "\n";
+                        /* getDay only returns the deltas per day (can be negative)
+                         * the cumulative sum is the actual number percentage */
+                        cumsum += traj.getDay(d, source);
+                        if (cumsum > 1.01) std::cout << "ops\n";
+                        dest[d+k] += n*cumsum; 
+                    }
+                };
+                auto add = [&](size_t k, auto& dest, double n) {
+                    for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
+                        dest[d+k] += n; 
+                    }
+                };
 
-            /* helper function distributing source on dest starting at k with factor n */
-            auto project = [&](size_t k, auto& dest, const auto& source, double n) {
-                double cumsum = 0;
-                for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
-                //std::cout << "dest.size = " << dest.size() << " d = " << d << " k = " << k << "\n";
-                    /* getDay only returns the deltas per day (can be negative)
-                     * the cumulative sum is the actual number percentage */
-                    cumsum += traj.getDay(d, source);
-                    if (cumsum > 1) std::cout << "ops\n";
-                    dest[d+k] += n*cumsum; 
+                /* project newly infected trajectories into future (starting today) */
+                project(i, getCoordsAt("mildlyInfectious"), traj.infectiousMild, newlyInfected);
+                project(i, getCoordsAt("highlyInfectious"), traj.infectiousHigh, newlyInfected);
+                project(i, getCoordsAt("incubating"), traj.incubating, newlyInfected);
+                project(i, getCoordsAt("asymptomatic"), traj.mild, newlyInfected);
+                project(i, getCoordsAt("mild"), traj.mild, newlyInfected);
+                project(i, getCoordsAt("serious"), traj.serious, newlyInfected);
+                project(i, getCoordsAt("recovered"), traj.recovered, newlyInfected);
+                project(i, getCoordsAt("dead"), traj.dead, newlyInfected);
+
+                /* correct for overfull hospitals assuming indepence of extra fatalities from their previous trajectory */
+                Float overCapacity = getCoordsAt("serious")[i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
+                Float extraDeaths  = params.probLethalDailyWhenSeriousUntreated * overCapacity;
+                /* unfortunately... */
+                if (extraDeaths > 0) {
+                    add(i, getCoordsAt("dead"), extraDeaths);
+                    /* these people are missing in the future. we assume that probLethalDailyWhenSeriousAtHome is so large 
+                     * that they died soon after becoming serious - many on the first day, many of the rest on the second. 
+                     * approximating, they died today - then we can correct the future given these precomputed trajectories conditioned on becoming
+                     * serious today */ 
+                    project(i, getCoordsAt("serious"), traj.seriousFromSerious, -extraDeaths);
+                    project(i, getCoordsAt("recovered"), traj.recoveredFromSerious, -extraDeaths);
+                    project(i, getCoordsAt("dead"), traj.deadFromSerious, -extraDeaths);
                 }
-            };
-            auto add = [&](size_t k, auto& dest, double n) {
-                for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
-                    dest[d+k] += n; 
+
+                /* find position of day i in piecewise constant function */
+                int found = -1;
+                for (size_t m = 0; m < data.discontinuousDays.size()-1; ++m) {
+                    if ( (data.discontinuousDays[m] <= i - maxDelayDaysTilData) && (i - maxDelayDaysTilData < data.discontinuousDays[m+1]) ) { 
+                        found = m;
+                        break;
+                    } 
                 }
-            };
+                Float pcf = 1; /* default: before first discontinuous day */
+                /* last loop excluded last element. we might be behind (if not before, or empty vector) */
+                if ( (found == -1) && (i - maxDelayDaysTilData >= data.discontinuousDays.back() )) 
+                    found = data.discontinuousDays.size() - 1;
+                if (found != -1)  /* after discontinuous day found */
+                    pcf = getCoordsAt("discontinuousVals")[found];
 
-            /* project newly infected trajectories into future (starting today) */
-            project(i, getCoordsAt("mildlyInfectious"), traj.infectiousMild, newlyInfected);
-            project(i, getCoordsAt("highlyInfectious"), traj.infectiousHigh, newlyInfected);
-            project(i, getCoordsAt("incubating"), traj.incubating, newlyInfected);
-            project(i, getCoordsAt("asymptomatic"), traj.mild, newlyInfected);
-            project(i, getCoordsAt("mild"), traj.mild, newlyInfected);
-            project(i, getCoordsAt("serious"), traj.serious, newlyInfected);
-            project(i, getCoordsAt("recovered"), traj.recovered, newlyInfected);
-            project(i, getCoordsAt("dead"), traj.dead, newlyInfected);
+                Float smoothbehavior = 1;
+                if (i >= maxDelayDaysTilData) {
+                    if (i - maxDelayDaysTilData < getCoordsAt("behavior").size())
+                        smoothbehavior = pcf*getCoordsAt("behavior")[i-maxDelayDaysTilData];
+                    else 
+                        smoothbehavior = pcf*getCoordsAt("behavior").back();
+                }
 
-            /* correct for overfull hospitals assuming indepence of extra fatalities from their previous trajectory */
-            Float overCapacity = getCoordsAt("serious")[i] - getCoordsAt("capacity")[i];
-            Float extraDeaths  = params.probLethalDailyWhenSeriousUntreated * overCapacity;
-            /* unfortunately... */
-            if (extraDeaths > 0) {
-                add(i, getCoordsAt("dead"), extraDeaths);
-                /* these people are missing in the future. we assume that probLethalDailyWhenSeriousAtHome is so large 
-                 * that they died soon after becoming serious - many on the first day, many of the rest on the second. 
-                 * approximating, they died today - then we can correct the future given these precomputed trajectories conditioned on becoming
-                 * serious today */ 
-                project(i, getCoordsAt("serious"), traj.seriousFromSerious, -extraDeaths);
-                project(i, getCoordsAt("recovered"), traj.recoveredFromSerious, -extraDeaths);
-                project(i, getCoordsAt("dead"), traj.deadFromSerious, -extraDeaths);
+                getCoordsAt("totalBehavior")[i] = pcf*smoothbehavior;
+
+                /* compute delta of infected from today to tomorrow */
+
+
+                double nSusceptible = popSize - getCoordsAt("incubating")[i] - getCoordsAt("asymptomatic")[i] - getCoordsAt("mild")[i] - getCoordsAt("serious")[i] - getCoordsAt("recovered")[i] - getCoordsAt("dead")[i];
+                newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*getCoordsAt("mildlyInfectious")[i] + getCoordsAt("betaHigh")[0]*getCoordsAt("highlyInfectious")[i]);
+
             }
 
-            /* find position of day i in piecewise constant function */
-            long found = -1;
-            for (size_t m = 0; m < data.discontinuousDays.size()-1; ++m) {
-                if ( (data.discontinuousDays[m] <= i - maxDelayDaysTilData) && (i - maxDelayDaysTilData < data.discontinuousDays[m+1]) ) { 
-                    found = m;
-                    break;
-                } 
+            /* compute loglikelihood in a way that it is continuous in delay*/
+            for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
+                Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - data.deathsPerDay[i];
+
+                loglike += shift_weight(shift)*(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
             }
-            /* last loop excluded last element. we might be behind (if not before, or empty vector) */
-            if ( (found == -1) && (i - maxDelayDaysTilData >= data.discontinuousDays.back() )) 
-                found = data.discontinuousDays.size() - 1;
-            Float pcf = 1; /* default: before first discontinuous day */
-            if (found != -1)  /* after discontinuous day found */
-                pcf = getCoordsAt("discontinuousVals")[found];
-
-            /* compute delta of infected from today to tomorrow */
-            double nSusceptible = popSize - getCoordsAt("incubating")[i] - getCoordsAt("asymptomatic")[i] - getCoordsAt("mild")[i] - getCoordsAt("serious")[i] - getCoordsAt("recovered")[i] - getCoordsAt("dead")[i];
-            newlyInfected = pcf*getCoordsAt("behavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*getCoordsAt("mildlyInfectious")[i] + getCoordsAt("betaHigh")[0]*getCoordsAt("highlyInfectious")[i]);
-
         }
-
-        /* compute loglikelihood */
-        for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
-            Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - data.deathsPerDay[i];
-
-            loglike += -0.5*delta*delta/data.deathsSigma[i]*data.deathsSigma[i];
-        }
-            
 
 
     }
@@ -404,42 +441,104 @@ public:
 
         auto newstate = copy();
 
-        /* start time */
+        bool big1 = rnd.nextFloat() < 0.6f;
+        bool big2 = rnd.nextFloat() < 0.6f;
+        bool big3 = rnd.nextFloat() < 0.6f;
+        bool big4 = rnd.nextFloat() < 0.6f;
+        bool big5 = rnd.nextFloat() < 0.6f;
 
-        newstate->getCoordsAt("delay")[0] += (rnd.nextDouble()-Float(0.5))*3;
-        bound(newstate->getCoordsAt("delay")[0], Float(0.0), Float(maxDelayDaysTilData));
+        /* start time */
+        if (rnd.nextFloat() < 0.3f) { 
+            newstate->getCoordsAt("delay")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+            if (big1) 
+                newstate->getCoordsAt("delay")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+            bound(newstate->getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
+        }
 
         /* betas */
-        newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
-        bound(newstate->getCoordsAt("betaMild")[0], 0.0, 1000.0);
-        newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
-        bound(newstate->getCoordsAt("betaHigh")[0], Float(0.0), Float(1000.0));
-        if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
-                std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
+        if (rnd.nextFloat() < 0.3f) {
+            if (!big2) 
+                newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+            else
+                newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
+            if (!big3) 
+                newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+            else
+                newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
+            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
+
+            if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
+                    std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
+        }
 
         /* discont. vals */
 
-        for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
-            if (data.discontinuousValsFixed[i])
-                continue;
-            newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
-            bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0.0), Float(1.0));
+        if (rnd.nextFloat() < 0.3f) { 
+            float nNotFixed = 0;
+            for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i)
+                if (data.discontinuousValsFixed[i])
+                    nNotFixed += 1;
 
+            for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
+                if (data.discontinuousValsFixed[i])
+                    continue;
+                float x = rnd.nextFloat();
+                if (x < 1/nNotFixed) { 
+                    if (!big4)
+                        newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                    else
+                        newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+
+                    bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+                }
+            }
         }
 
         /* behaviorfunc */
 
-        Float T = data.deathsPerDay.size(); 
-        Float omega = 2*Float(3.1415)/T * 5 * rnd.nextDouble();
-        Float A     = std::min(Float(1), stepsizeCorrectionFac)*0.1*(rnd.nextDouble()-0.5); /*neg A realized by phase */
+        if (rnd.nextFloat() < 0.3f) { 
+            Float T = data.deathsPerDay.size(); 
+            double x = rnd.nextDouble();
+            Float omega = 2*Float(3.1415)/T * 5 * x*x;
+            Float A     = std::min(Float(1), stepsizeCorrectionFac)*0.1*(rnd.nextDouble()-0.5); /*neg A realized by phase */
+            if (big5) 
+                A += std::min(Float(1), stepsizeCorrectionFac)*(rnd.nextDouble()-0.5); /*neg A realized by phase */
 
-        for (size_t i = maxDelayDaysTilData; i < newstate->getCoordsAt("behavior").size(); ++i) {
-            newstate->getCoordsAt("behavior")[i] += A*std::cos(omega*(i-maxDelayDaysTilData));
+            size_t size = newstate->getCoordsAt("behavior").size();
+            //for (size_t i = maxDelayDaysTilData; i < size; ++i) {
+                //[> do not predict behavior after 2 weeks before last data point <] 
+                //int thresh = size - nPredictDays - 14;
+                //if (i < thresh)
+                    //newstate->getCoordsAt("behavior")[i] += A*(std::cos(omega*(i-maxDelayDaysTilData))-1);
+                //else [>instead fix it <]
+                    //newstate->getCoordsAt("behavior")[i] = newstate->getCoordsAt("behavior")[thresh-1];
+            //}
+            for (size_t i = 0; i < size; ++i) {
+                    newstate->getCoordsAt("behavior")[i] += A*(std::cos(omega*i)-1);
+                    bound(newstate->getCoordsAt("behavior")[i], Float(0), Float(2));
+            }
         }
             
         newstate->eval(shared);
         return Proposal{newstate, 1};
 
+    }
+
+    void force_bounds() override {
+
+        //return;
+        bound(getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
+        for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) {
+            if (data.discontinuousValsFixed[i])
+                continue;
+            bound(getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+        }
+        for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
+                bound(getCoordsAt("behavior")[i], Float(0), Float(2));
+        }
+        bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
+        bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
     }
 
     HAS_STEP
