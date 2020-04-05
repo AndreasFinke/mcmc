@@ -204,7 +204,7 @@ public:
 
     static constexpr size_t nGrid = 100000;
     static constexpr size_t nDays = 500;
-    static constexpr size_t nTrajectories = 40000000;
+    static constexpr size_t nTrajectories = 10000000;
 
     std::array<double, nGrid> incubating;
     std::array<double, nGrid> asymptomatic;
@@ -331,22 +331,45 @@ public:
         int start = maxDelayDaysTilData - getCoordsAt("delay")[0];
         Float fractionalDelay = maxDelayDaysTilData - getCoordsAt("delay")[0] - start;
         auto shift_weight = [&] (int shift) -> Float { return (1-shift)*(1-fractionalDelay) + shift*fractionalDelay; };
-        
+
         for (int shift = 1; shift >= 0; --shift) { 
 
             /* Patient Zero. Treated as highly infectious on first day and like an average case afterwards, including mildly infectious trajectories, 
              * for simplicity. */
             double newlyInfected = 1;
             /* null old results */
-            getCoordsAt("mildlyInfectious").assign(size, Float(0));
-            getCoordsAt("highlyInfectious").assign(size, Float(0));
-            getCoordsAt("incubating").assign(size, Float(0));
-            getCoordsAt("asymptomatic").assign(size, Float(0));
-            getCoordsAt("mild").assign(size, Float(0));
-            getCoordsAt("serious").assign(size, Float(0));
-            getCoordsAt("recovered").assign(size, Float(0));
-            getCoordsAt("dead").assign(size, Float(0));
+            //getCoordsAt("mildlyInfectious").assign(size, Float(0));
+            //getCoordsAt("highlyInfectious").assign(size, Float(0));
+            //getCoordsAt("incubating").assign(size, Float(0));
+            //getCoordsAt("asymptomatic").assign(size, Float(0));
+            //getCoordsAt("mild").assign(size, Float(0));
+            //getCoordsAt("serious").assign(size, Float(0));
+            //getCoordsAt("recovered").assign(size, Float(0));
+            //getCoordsAt("dead").assign(size, Float(0));
             getCoordsAt("totalBehavior").assign(size, Float(1));
+
+            mildlyInfectiousBuf[shift].assign(size, Float(0));
+            highlyInfectiousBuf[shift].assign(size, Float(0));
+            incubatingBuf[shift].assign(size, Float(0));
+            asymptomaticBuf[shift].assign(size, Float(0));
+            mildBuf[shift].assign(size, Float(0));
+            seriousBuf[shift].assign(size, Float(0));
+            recoveredBuf[shift].assign(size, Float(0));
+            deadBuf[shift].assign(size, Float(0));
+            //deadBuf[shift].assign(size, Float(0));
+
+            auto multset = [&](auto& dest, auto& source, double fac) {
+                for (size_t i = 0; i < dest.size(); ++i) { 
+                    dest[i] = fac*source[i]; 
+                }
+            };
+            auto multadd = [&](auto& dest, auto& source, double fac) {
+                for (size_t i = 0; i < dest.size(); ++i) { 
+                    dest[i] += fac*source[i]; 
+                }
+            };
+        
+
             for (int i = start+shift; i < size; ++i) {
 
                 /* helper function distributing source on dest starting at k with factor n */
@@ -368,28 +391,41 @@ public:
                 };
 
                 /* project newly infected trajectories into future (starting today) */
-                project(i, getCoordsAt("mildlyInfectious"), traj.infectiousMild, newlyInfected);
-                project(i, getCoordsAt("highlyInfectious"), traj.infectiousHigh, newlyInfected);
-                project(i, getCoordsAt("incubating"), traj.incubating, newlyInfected);
-                project(i, getCoordsAt("asymptomatic"), traj.mild, newlyInfected);
-                project(i, getCoordsAt("mild"), traj.mild, newlyInfected);
-                project(i, getCoordsAt("serious"), traj.serious, newlyInfected);
-                project(i, getCoordsAt("recovered"), traj.recovered, newlyInfected);
-                project(i, getCoordsAt("dead"), traj.dead, newlyInfected);
+                //project(i, getCoordsAt("mildlyInfectious"), traj.infectiousMild, newlyInfected);
+                //project(i, getCoordsAt("highlyInfectious"), traj.infectiousHigh, newlyInfected);
+                //project(i, getCoordsAt("incubating"), traj.incubating, newlyInfected);
+                //project(i, getCoordsAt("asymptomatic"), traj.mild, newlyInfected);
+                //project(i, getCoordsAt("mild"), traj.mild, newlyInfected);
+                //project(i, getCoordsAt("serious"), traj.serious, newlyInfected);
+                //project(i, getCoordsAt("recovered"), traj.recovered, newlyInfected);
+                //project(i, getCoordsAt("dead"), traj.dead, newlyInfected);
 
+                project(i, mildlyInfectiousBuf[shift], traj.infectiousMild, newlyInfected);
+                project(i, highlyInfectiousBuf[shift], traj.infectiousHigh, newlyInfected);
+                project(i, incubatingBuf[shift], traj.incubating, newlyInfected);
+                project(i, asymptomaticBuf[shift], traj.mild, newlyInfected);
+                project(i, mildBuf[shift], traj.mild, newlyInfected);
+                project(i, seriousBuf[shift], traj.serious, newlyInfected);
+                project(i, recoveredBuf[shift], traj.recovered, newlyInfected);
+                project(i, deadBuf[shift], traj.dead, newlyInfected);
                 /* correct for overfull hospitals assuming indepence of extra fatalities from their previous trajectory */
-                Float overCapacity = getCoordsAt("serious")[i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
+                //Float overCapacity = getCoordsAt("serious")[i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
+                Float overCapacity = seriousBuf[shift][i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
                 Float extraDeaths  = params.probLethalDailyWhenSeriousUntreated * overCapacity;
                 /* unfortunately... */
                 if (extraDeaths > 0) {
-                    add(i, getCoordsAt("dead"), extraDeaths);
+                    //add(i, getCoordsAt("dead"), extraDeaths);
+                    add(i, deadBuf[shift], extraDeaths);
                     /* these people are missing in the future. we assume that probLethalDailyWhenSeriousAtHome is so large 
                      * that they died soon after becoming serious - many on the first day, many of the rest on the second. 
                      * approximating, they died today - then we can correct the future given these precomputed trajectories conditioned on becoming
                      * serious today */ 
-                    project(i, getCoordsAt("serious"), traj.seriousFromSerious, -extraDeaths);
-                    project(i, getCoordsAt("recovered"), traj.recoveredFromSerious, -extraDeaths);
-                    project(i, getCoordsAt("dead"), traj.deadFromSerious, -extraDeaths);
+                    //project(i, getCoordsAt("serious"), traj.seriousFromSerious, -extraDeaths);
+                    //project(i, getCoordsAt("recovered"), traj.recoveredFromSerious, -extraDeaths);
+                    //project(i, getCoordsAt("dead"), traj.deadFromSerious, -extraDeaths);
+                    project(i, seriousBuf[shift], traj.seriousFromSerious, -extraDeaths);
+                    project(i, recoveredBuf[shift], traj.recoveredFromSerious, -extraDeaths);
+                    project(i, deadBuf[shift], traj.deadFromSerious, -extraDeaths);
                 }
 
                 /* find position of day i in piecewise constant function */
@@ -420,12 +456,35 @@ public:
                 /* compute delta of infected from today to tomorrow */
 
 
-                double nSusceptible = popSize - getCoordsAt("incubating")[i] - getCoordsAt("asymptomatic")[i] - getCoordsAt("mild")[i] - getCoordsAt("serious")[i] - getCoordsAt("recovered")[i] - getCoordsAt("dead")[i];
-                newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*getCoordsAt("mildlyInfectious")[i] + getCoordsAt("betaHigh")[0]*getCoordsAt("highlyInfectious")[i]);
+                //double nSusceptible = popSize - getCoordsAt("incubating")[i] - getCoordsAt("asymptomatic")[i] - getCoordsAt("mild")[i] - getCoordsAt("serious")[i] - getCoordsAt("recovered")[i] - getCoordsAt("dead")[i];
+                //newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*getCoordsAt("mildlyInfectious")[i] + getCoordsAt("betaHigh")[0]*getCoordsAt("highlyInfectious")[i]);
+                double nSusceptible = popSize - incubatingBuf[shift][i] - asymptomaticBuf[shift][i] - mildBuf[shift][i] - seriousBuf[shift][i] - recoveredBuf[shift][i] - deadBuf[shift][i];
+                newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*mildlyInfectiousBuf[shift][i] + getCoordsAt("betaHigh")[0]*highlyInfectiousBuf[shift][i]);
 
             }
 
-            /* compute loglikelihood in a way that it is continuous in delay*/
+            /* copy weighted result to output */
+            if (shift == 1) { 
+            multset(getCoordsAt("mildlyInfectious"), mildlyInfectiousBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("highlyInfectious"), highlyInfectiousBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("incubating"), incubatingBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("asymptomatic"), asymptomaticBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("mild"), mildBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("serious"), seriousBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("recovered"), recoveredBuf[shift], shift_weight(shift));
+            multset(getCoordsAt("dead"), deadBuf[shift], shift_weight(shift));
+            } else {
+            multadd(getCoordsAt("mildlyInfectious"), mildlyInfectiousBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("highlyInfectious"), highlyInfectiousBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("incubating"), incubatingBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("asymptomatic"), asymptomaticBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("mild"), mildBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("serious"), seriousBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("recovered"), recoveredBuf[shift], shift_weight(shift));
+            multadd(getCoordsAt("dead"), deadBuf[shift], shift_weight(shift));
+            }
+
+            /* compute and copy weighted loglikelihood to loglike */
             for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
                 Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - data.deathsPerDay[i];
 
@@ -474,27 +533,69 @@ public:
 
         /* discont. vals */
 
-        if (rnd.nextFloat() < 0.3f) { 
+        //if (rnd.nextFloat() < 0.3f) { 
+            //float nNotFixed = 0;
+            //for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i)
+                //if (data.discontinuousValsFixed[i])
+                    //nNotFixed += 1;
+
+            //for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
+                //if (data.discontinuousValsFixed[i])
+                    //continue;
+                //float x = rnd.nextFloat();
+                //if (x < 1/nNotFixed) { 
+                    //if (!big4)
+                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                    //else
+                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+
+                    //bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+                //}
+            //}
+        //}
+
+        if (rnd.nextFloat() < 0.9f) { 
+
+            /* how many to sample? */
             float nNotFixed = 0;
             for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i)
                 if (data.discontinuousValsFixed[i])
                     nNotFixed += 1;
 
-            for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
+            int start = 0;
+            int stop = newstate->getCoordsAt("discontinuousVals").size();
+            int incr = 1;
+            if (rnd.nextDouble() < 0.5) { 
+                std::swap(start, stop);
+                start--;
+                stop--;
+                incr = -1;
+            }
+            for (size_t i = start; i != stop; i += incr) {
+                /* jump over fixed ones */
                 if (data.discontinuousValsFixed[i])
                     continue;
+
+                /* sample each not fixed with probability 2/nNotFixed, to do usually about two but sometimes more or less - good if they are (anti)correlated, allowing larger steps */
                 float x = rnd.nextFloat();
-                if (x < 1/nNotFixed) { 
+                if (x < 2/nNotFixed) { 
                     if (!big4)
                         newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
                     else
                         newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
 
-                    bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+                    /* bound between left and right Val */
+                    Float lower = 0;
+                    Float upper = 1;
+                    if (i >= 1)
+                        upper = newstate->getCoordsAt("discontinuousVals")[i-1];
+                    if (i < newstate->getCoordsAt("discontinuousVals").size()-1) 
+                        lower = newstate->getCoordsAt("discontinuousVals")[i+1];
+
+                    bound(newstate->getCoordsAt("discontinuousVals")[i], lower, upper);
                 }
             }
         }
-
         /* behaviorfunc */
 
         if (rnd.nextFloat() < 0.3f) { 
@@ -529,10 +630,13 @@ public:
 
         //return;
         bound(getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
+
+        Float lastVal = 1;
         for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) {
             if (data.discontinuousValsFixed[i])
                 continue;
-            bound(getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+            bound(getCoordsAt("discontinuousVals")[i], Float(0), lastVal);
+            lastVal = getCoordsAt("discontinuousVals")[i];
         }
         for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
                 bound(getCoordsAt("behavior")[i], Float(0), Float(2));
@@ -545,7 +649,15 @@ public:
 
 private:
 
-    std::vector<std::vector<Float>> datapoints;
+
+    std::vector<Float> mildlyInfectiousBuf[2];
+    std::vector<Float> highlyInfectiousBuf[2];
+    std::vector<Float> incubatingBuf[2];
+    std::vector<Float> asymptomaticBuf[2];
+    std::vector<Float> mildBuf[2];
+    std::vector<Float> seriousBuf[2];
+    std::vector<Float> recoveredBuf[2];
+    std::vector<Float> deadBuf[2];
 
 };
 

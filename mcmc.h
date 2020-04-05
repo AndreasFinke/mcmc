@@ -240,6 +240,20 @@ public:
             }
         }
     }
+    void fma(const std::shared_ptr<State>& s, Float fac) {
+        for (size_t i = 0; i < state.size(); ++i) {
+            for (size_t j = 0; j < state[i]->getCoords().size(); ++j) {
+                for (size_t k = 0; k < state[i]->getCoords()[j].size(); ++k) { 
+                    state[i]->getCoords()[j][k] += fac*s->state[i]->getCoords()[j][k];
+                }
+            }
+        }
+    }
+    void assign(const std::shared_ptr<State>& s) {
+        for (size_t i = 0; i < state.size(); ++i) {
+            *(state[i]) = *(s->state[i]);
+        }
+    }
     void multCoordsBy(Float a) {
         for (size_t i = 0; i < state.size(); ++i) {
             for (size_t j = 0; j < state[i]->getCoords().size(); ++j) {
@@ -762,7 +776,7 @@ public:
                 if (!singleStep(rec, nAccept, true))
                     return; 
 
-                int nRepeat = 100;
+                int nRepeat = 20;
                 if (verbose)
                     nRepeat = 10;
 
@@ -909,11 +923,14 @@ class GradientDecent {
 
 public:
 
-    GradientDecent(const std::shared_ptr<State>& state) : state(state) {
+    GradientDecent(const std::shared_ptr<State>& state, Float eps) : state(state), 
+    lambda(eps), Lambda(eps), theta(1e20), Theta(1e20), epsilon(eps),
+    eta(0) {
 
         if (!state->isInitialized)
             state->init();
 
+        state_old = state->deep_copy();
         grad = state->deep_copy();
 
         for (size_t i = 0; i < grad->state.size(); ++i) { 
@@ -923,17 +940,28 @@ public:
                 grad->state[i]->coords[j].assign(grad->state[i]->coords[j].size(), Float(0));  
             }
         }
+
+        compute_grad();
+        grad_old = grad->deep_copy();
+        state->fma(grad, lambda);
+        /* initial values are relevant only for assigning to stateHelp_old, which needs to equal state 
+         * initially */
+        stateHelp = state->deep_copy();
+        /* will be assigned to stateHelp anyway but prepare the copy */
+        stateHelp_old = state->deep_copy();
+
     } 
 
-    void decent() {
+    void compute_grad() {
         Float loglikeold = state->loglikelihood();
         for (size_t i = 0; i < grad->state.size(); ++i) { 
             for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
-                /* only compute gradient of independent unfixed coords */
+                /* skip derived parameters */
                 if (j >= grad->state[i]->coords.size() - grad->state[i]->nDerived)
                     break;
                 for (size_t k = 0; k < grad->state[i]->coords[j].size(); ++k) { 
 
+                    /* only compute gradient of actually free dof */
                     if (grad->state[i]->isFixed(std::make_pair(j, k))) {
                         continue;
                     }
@@ -950,10 +978,172 @@ public:
             state->eval_graph(i);
         }
 
-        grad->multCoordsBy(learningRate);
-        state->addCoordsOf(grad);
+        //grad->multCoordsBy(learningRate);
+        //state->addCoordsOf(grad);
         //state->force_bounds();
+    }
 
+    void adaptive_gd(int steps) {
+
+
+        for (int n = 0; n < steps; ++n) { 
+
+            compute_grad();
+
+            Float xnorm = 0;
+            Float gradnorm = 0;
+            for (size_t i = 0; i < grad->state.size(); ++i) { 
+                for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
+                    /* skip derived parameters */
+                    if (j >= grad->state[i]->coords.size() - grad->state[i]->nDerived)
+                        break;
+                    for (size_t k = 0; k < grad->state[i]->coords[j].size(); ++k) { 
+
+                        /* only consider actually free dof */
+                        if (grad->state[i]->isFixed(std::make_pair(j, k))) {
+                            continue;
+                        }
+
+                        Float deltax = state->state[i]->coords[j][k] - state_old->state[i]->coords[j][k];
+                        Float deltagrad = grad->state[i]->coords[j][k] - grad_old->state[i]->coords[j][k];
+
+                        xnorm += deltax*deltax;
+                        gradnorm += deltagrad*deltagrad;
+                    }
+                }
+            }
+            xnorm = std::sqrt(xnorm);
+            gradnorm = std::sqrt(gradnorm);
+
+            std::cout << "gradnorm " << gradnorm << " xnorm " << xnorm << " lambda " << lambda << " theta " << theta << "\n";
+            Float lambda_new = std::min(std::sqrt(1+theta)*lambda, xnorm*Float(0.5)/gradnorm);
+
+            state_old->assign(state);
+
+            std::cout << "lambda_new " << lambda_new << " coord " << state->state[0]->coords[0][0] << "\n";
+            state->fma(grad, lambda_new);
+            std::cout << "                 coord " << state->state[0]->coords[0][0] << "\n";
+
+            grad_old->assign(grad);
+
+            theta = lambda_new/lambda;
+            lambda = lambda_new;
+        
+            state->force_bounds();
+        }
+
+    }
+
+    void accelerated_adaptive_gd(int steps) {
+
+
+        for (int n = 0; n < steps; ++n) { 
+
+            compute_grad();
+
+            Float xnorm = 0;
+            Float gradnorm = 0;
+            for (size_t i = 0; i < grad->state.size(); ++i) { 
+                for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
+                    /* skip derived parameters */
+                    if (j >= grad->state[i]->coords.size() - grad->state[i]->nDerived)
+                        break;
+                    for (size_t k = 0; k < grad->state[i]->coords[j].size(); ++k) { 
+
+                        /* only consider actually free dof */
+                        if (grad->state[i]->isFixed(std::make_pair(j, k))) {
+                            continue;
+                        }
+
+                        Float deltax = state->state[i]->coords[j][k] - state_old->state[i]->coords[j][k];
+                        Float deltagrad = grad->state[i]->coords[j][k] - grad_old->state[i]->coords[j][k];
+
+                        xnorm += deltax*deltax;
+                        gradnorm += deltagrad*deltagrad;
+                    }
+                }
+            }
+            xnorm = std::sqrt(xnorm);
+            gradnorm = std::sqrt(gradnorm);
+
+            std::cout << "gradnorm " << gradnorm << " xnorm " << xnorm << " lambda " << lambda << " theta " << theta << "\n";
+            Float lambda_new = std::min(std::sqrt(1+theta)*lambda, xnorm*Float(0.5)/gradnorm);
+            Float Lambda_new = std::min(std::sqrt(1+Theta)*Lambda, gradnorm*Float(0.5)/xnorm);
+
+            state_old->assign(state);
+            stateHelp_old->assign(stateHelp);
+
+            Float a = std::sqrt(1/lambda);
+            Float b = std::sqrt(Lambda);
+            Float beta = (a-b)/(a+b);
+
+            stateHelp->assign(state);
+            stateHelp->fma(grad, lambda_new);
+            std::cout << "lambda_new " << lambda_new << " coord " << state->state[0]->coords[0][0] << "\n";
+            state->assign(stateHelp);
+            state->fma(stateHelp, beta);
+            state->fma(stateHelp_old, -beta);
+            std::cout << "                 coord " << state->state[0]->coords[0][0] << "\n";
+
+            grad_old->assign(grad);
+
+            theta = lambda_new/lambda;
+            Theta = Lambda_new/Lambda;
+            lambda = lambda_new;
+            Lambda = Lambda_new;
+          
+            state->force_bounds();
+        }
+    }
+
+    void nesterov_accelerated_gd(int steps) {
+
+        for (int n = 0; n < steps; ++n) { 
+
+            compute_grad();
+
+            //Float xnorm = 0;
+            //Float gradnorm = 0;
+            //for (size_t i = 0; i < grad->state.size(); ++i) { 
+                //for (size_t j = 0; j < grad->state[i]->coords.size(); ++j) { 
+                    //[> skip derived parameters <]
+                    //if (j >= grad->state[i]->coords.size() - grad->state[i]->nDerived)
+                        //break;
+                    //for (size_t k = 0; k < grad->state[i]->coords[j].size(); ++k) { 
+
+                        //[> only consider actually free dof <]
+                        //if (grad->state[i]->isFixed(std::make_pair(j, k))) {
+                            //continue;
+                        //}
+
+                        //Float deltax = state->state[i]->coords[j][k] - state_old->state[i]->coords[j][k];
+                        //Float deltagrad = grad->state[i]->coords[j][k] - grad_old->state[i]->coords[j][k];
+
+                        //xnorm += deltax*deltax;
+                        //gradnorm += deltagrad*deltagrad;
+                    //}
+                //}
+            //}
+            //xnorm = std::sqrt(xnorm);
+            //gradnorm = std::sqrt(gradnorm);
+
+            Float eta_new = Float(0.5)*(1+std::sqrt(1+4*eta*eta));
+            Float gamma = (1 - eta)/eta_new;
+
+            state_old->assign(state);
+            stateHelp_old->assign(stateHelp);
+
+            stateHelp->assign(state);
+            stateHelp->fma(grad, learningRate);
+            state->assign(stateHelp);
+            state->fma(stateHelp, -gamma);
+            state->fma(stateHelp_old, gamma);
+
+            //grad_old->assign(grad);
+
+            eta = eta_new;           
+            state->force_bounds();
+        }
     }
 
     void perturb(Float a) {
@@ -966,9 +1156,13 @@ private:
 
     pcg32 rnd;
 
-    Float epsilon = 0.00001;
-    std::shared_ptr<State> state;
-    std::shared_ptr<State> grad;
+    std::shared_ptr<State> state, state_old, stateHelp, stateHelp_old;
+    std::shared_ptr<State> grad, grad_old;
+
+    Float epsilon;
+    Float lambda, Lambda;
+    Float theta, Theta;
+    Float eta;
 
 };
 

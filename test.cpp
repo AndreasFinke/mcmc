@@ -138,8 +138,11 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("recordSamples", &MetropolisChain::recordSamples);
     py::class_<GradientDecent>(m, "GradientDecent")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
-        .def(py::init<std::shared_ptr<State>>())
-        .def("decent", &GradientDecent::decent)
+        .def(py::init<std::shared_ptr<State>, Float>())
+        //.def("decent", &GradientDecent::decent)
+        .def("adaptive_gd", &GradientDecent::adaptive_gd)
+        .def("accelerated_adaptive_gd", &GradientDecent::accelerated_adaptive_gd)
+        .def("nesterov_accelerated_gd", &GradientDecent::nesterov_accelerated_gd)
         .def("perturb", &GradientDecent::perturb)
         .def_readwrite("learningRate", &GradientDecent::learningRate);
         //.def_readwrite("Lsmooth", &Sampler::Lsmooth);
