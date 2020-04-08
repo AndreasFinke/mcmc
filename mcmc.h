@@ -687,12 +687,12 @@ class CoolingTarget : public SimpleTarget {
 
 public:
 
-    Float slope;
+    Float slope, Tinit;
 
-    CoolingTarget(Float coolingSlope) : slope(coolingSlope) {} 
+    CoolingTarget(Float coolingSlope, Float Tinit) : slope(coolingSlope), Tinit(Tinit) {} 
 
     Float beta(Float time) override { 
-        return std::exp(time*slope);
+        return std::exp(time*slope)/Tinit;
     }
 
     virtual ~CoolingTarget() {} 
