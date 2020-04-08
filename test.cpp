@@ -120,6 +120,11 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<CoolingTarget, SimpleTarget, std::shared_ptr<CoolingTarget>>(m, "CoolingTarget")
         .def(py::init<Float, Float>());
         //.def("add_state", &Target::add_state);
+    py::class_<AdvCoolingTarget, SimpleTarget, std::shared_ptr<AdvCoolingTarget>>(m, "AdvCoolingTarget")
+        .def(py::init<Float, Float>())
+        .def_readwrite("maxPeriodLength", &AdvCoolingTarget::maxPeriodLength)
+        .def_readwrite("minOscillations", &AdvCoolingTarget::minOscillations)
+        .def_readwrite("defaultHeatCapacity", &AdvCoolingTarget::defaultHeatCapacity);
     py::class_<ProbabilityDistributionSamples>(m, "ProbabilityDistributionSamples")
         .def(py::init<py::array_t<Float>, py::array_t<Float>>());
     py::class_<PiecewiseConstantPDF, SubspaceState, std::shared_ptr<PiecewiseConstantPDF>>(m, "PiecewiseConstantPDF")

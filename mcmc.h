@@ -655,17 +655,17 @@ public:
         return 1;
     }
 
-    void step(pcg32& rng, ProposalRecord& rec, Float time, bool isSubspaceRandom) {
+    virtual bool step(pcg32& rnd, ProposalRecord& rec, Float time, bool isSubspaceRandom, int& nAccept) {
 
         if (state == nullptr) { 
             rec.prop = {};
-            return;
+            return false;
         }
 
         if (isSubspaceRandom)
-            state->step_random_subspace(rng, rec);
+            state->step_random_subspace(rnd, rec);
         else
-            state->step_given_subspace(rng, rec);
+            state->step_given_subspace(rnd, rec);
 
         Float weightOld = weight(); //TODO: should be fine to read if from state.
         Float weightNew = weight(rec.prop[rec.whichHead], rec.whichHead);
@@ -674,6 +674,20 @@ public:
         rec.deltaloglike *= beta(time);
         rec.weight = weightNew;
 
+        if (rec.prop.size() == 0) {
+            if (verbose)
+                std::cout << "No proposal received...\n";
+            return false;
+        }
+        if (verbose)
+            std::cout << "Delta loglike (incl. weight and temp) " << rec.deltaloglike << ".\n";
+        if ( rnd.nextFloat() < rec.propasymratio*std::exp(rec.deltaloglike) ) { 
+            state->accept(rec);
+            ++nAccept;
+            if (verbose)
+                std::cout << "Accepted.\n";
+        }
+        return true;
     }
 
 
@@ -699,6 +713,123 @@ public:
 
 };
 
+class AdvCoolingTarget : public SimpleTarget {
+
+    std::vector<Float> energies;
+    Float energy_old, relaxationTime; 
+    Float T, DeltaT; 
+    Float slope;
+    bool first = true;
+
+    int startindex = 0;
+
+    bool measure(Float& energy) { 
+
+        energies.push_back(-state->loglikelihood());
+
+        /* actually half a period below */
+        int currentPeriodLength = 0;
+
+        int currentOscillations = 0;
+        int lastSign = 1;
+        bool isEquil = false;
+
+        for (size_t i = startindex+1; i < energies.size(); ++i) {
+
+            /* increment current period length. If too big, reset counter of continous short periods currentOscillations 
+             * and start looking for that from here next time */
+            if (++currentPeriodLength > maxPeriodLength) {
+                currentPeriodLength = 0;
+                currentOscillations = 0;
+                startindex = i;
+            }
+            /* sign of delta energy has changed. increase counter and resent period length counter.  */
+            if ( (energies[i]-energies[i-1])*lastSign < 0 ) {
+                lastSign = -lastSign;
+                currentOscillations++;
+                currentPeriodLength = 0;
+            }
+            /* we think this is equilibrium, since engergy fluctuates both ways quickly for a long time */
+            if( currentOscillations >= minOscillations) {
+                std::cout <<"Thinking equilibirum at i = " << i << " of " << energies.size() << " saved energies.\n";
+                isEquil = true;
+                relaxationTime = i - startindex;
+            }
+        }
+
+        if (isEquil) {
+            Float avg = 0;
+            for (size_t i = startindex; i < energies.size(); ++i) 
+                avg += energies[i];
+            avg /= (energies.size() - startindex);
+            energies.resize(0);
+            energy = avg;
+        }
+
+        /* */
+        return isEquil;
+    }
+
+public:
+
+    int maxPeriodLength = 6;
+    int minOscillations = 20;
+    Float defaultHeatCapacity = 1;
+
+    AdvCoolingTarget(Float coolingSlope, Float Tinit) : slope(coolingSlope), T(Tinit) {
+        DeltaT = T/4;
+    } 
+    
+    Float beta(Float time) override { 
+        return 1/T;
+    }
+
+    bool step(pcg32& rnd, ProposalRecord& rec, Float time, bool isSubspaceRandom, int& nAccept) override {
+
+        bool ret = SimpleTarget::step(rnd, rec, time, isSubspaceRandom, nAccept);
+
+        /* only consider accepted states, as samples from the equilibrium or non-equilibrium */ 
+        if (nAccept == 1) { 
+       
+            /* keep record current energy until system is relaxed, in which case relaxation will be updated, energy_new will be set, 
+             * and true returned */
+            Float energy_new; 
+            bool relaxed = measure(energy_new);
+
+            if (relaxed) { 
+
+                /* if this is the second time that it has relaxed (or later) update DeltaT */ 
+                if (!first) { 
+                    Float heatCapacity = -(energy_new - energy_old)/DeltaT;
+
+                    std::cout << "heatcap " << heatCapacity << "\n";
+                    if (heatCapacity < 0) { 
+                        std::cout << "Negative heat capacity due to nonconverged estimation. Continuing... \n"; 
+                        heatCapacity = defaultHeatCapacity;
+                    }
+
+                    DeltaT = slope*T/(relaxationTime*std::sqrt(heatCapacity));
+
+                    std::cout << "deltaT = " << DeltaT << ", this is " << DeltaT/T << " frac of T.\n";
+
+                }
+
+                first = false;
+                
+                /* equilibrium has been reached, so cool more! */
+                T -= DeltaT;
+                
+                energy_old = energy_new;
+            }
+        
+        }
+
+        return ret; 
+    }
+
+    virtual ~AdvCoolingTarget() {} 
+
+};
 /*
         START_NAMED_TIMER("Chains") 
         tbb::parallel_for(
@@ -735,24 +866,6 @@ public:
         START_NAMED_TIMER("Adjustment");
         for (int i = 0; i < nSamples+nAdjust; ++i)  {
 
-            auto singleStep = [&](ProposalRecord& rec, int& accept, bool isSubspaceRandom) -> bool { 
-                target->step(rnd, rec, Float(i)/nAdjust, isSubspaceRandom);
-                if (rec.prop.size() == 0) {
-                    if (verbose)
-                        std::cout << "No proposal received...\n";
-                    return false;
-                }
-                if (verbose)
-                    std::cout << "Delta loglike (incl. weight and temp) " << rec.deltaloglike << ".\n";
-                if ( rnd.nextFloat() < rec.propasymratio*std::exp(rec.deltaloglike) ) { 
-                    target->state->accept(rec);
-                    ++accept;
-                    if (verbose)
-                        std::cout << "Accepted.\n";
-                }
-                return true;
-            };
-
             ProposalRecord rec; 
 
             if (i == nAdjust)  { 
@@ -773,15 +886,17 @@ public:
                 }
 
                 nAccept = 0;
-                if (!singleStep(rec, nAccept, true))
+                if (!target->step(rnd, rec, Float(i)/nAdjust, true, nAccept)) 
                     return; 
+                //if (!singleStep(rec, nAccept, true))
+                    //return; 
 
                 int nRepeat = 20;
                 if (verbose)
                     nRepeat = 10;
 
                 for (int j = 0; j < nRepeat-1; ++j)  
-                    singleStep(rec, nAccept, false);
+                    target->step(rnd, rec, Float(i)/nAdjust, false, nAccept);
 
                 Float acceptRate = Float(nAccept)/nRepeat; 
 
@@ -802,10 +917,10 @@ public:
                     std::cout << "#" << std::flush;
                     ++progressbar;
                 }
-                singleStep(rec, nAccept, true);
-
-
+                
+                target->step(rnd, rec, Float(i)/nAdjust, true, nAccept);
             }
+
             if ((i > nBurnin) && (i % thinning) == 0 && recordSamples) 
                 samples.push_back(std::make_shared<State>(*(target->state))); 
             if ((i > nBurnin) && computeMean)
