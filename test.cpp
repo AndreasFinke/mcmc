@@ -120,7 +120,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<>())
         .def("set_posterior", &SimpleTarget::set_posterior);
     py::class_<CoolingTarget, SimpleTarget, std::shared_ptr<CoolingTarget>>(m, "CoolingTarget")
-        .def(py::init<Float>());
+        .def(py::init<Float, Float>());
         //.def("add_state", &Target::add_state);
     py::class_<ProbabilityDistributionSamples>(m, "ProbabilityDistributionSamples")
         .def(py::init<py::array_t<Float>, py::array_t<Float>>());
