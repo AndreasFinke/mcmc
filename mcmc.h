@@ -780,8 +780,12 @@ public:
                 if (verbose)
                     nRepeat = 10;
 
-                for (int j = 0; j < nRepeat-1; ++j)  
+                for (int j = 0; j < nRepeat-1; ++j) { 
+                    int oldaccept = nAccept;
                     singleStep(rec, nAccept, false);
+                    if (nAccept > oldaccept) 
+                        std::cout << rec.deltaloglike <<" (" << target->state->loglikelihood() << ")\n";
+                }
 
                 Float acceptRate = Float(nAccept)/nRepeat; 
 

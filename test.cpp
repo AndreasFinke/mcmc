@@ -52,6 +52,8 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("initialBetaMild", &DiseaseData::initialBetaMild)
         .def_readwrite("initialBetaHigh", &DiseaseData::initialBetaHigh)
         .def_readwrite("initialDelay", &DiseaseData::initialDelay)
+        .def_readwrite("computeR", &DiseaseData::computeR)
+        .def_readwrite("computeOnlyLikelihood", &DiseaseData::computeOnlyLikelihood)
         .def_readwrite("fixBehaviorInAdvance", &DiseaseData::fixBehaviorInAdvance);
     py::class_<DiseaseParams>(m, "DiseaseParams")
         .def(py::init<>())
