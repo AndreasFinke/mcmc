@@ -763,6 +763,7 @@ class AdvCoolingTarget : public SimpleTarget {
                 //avg += energies[i];
             //avg /= (energies.size() - startindex);
             //
+            energies.erase(energies.begin()+startindex);
             std::sort(energies.begin(), energies.end());
             Float median = energies[energies.size()/2]; 
             energies.resize(0);
