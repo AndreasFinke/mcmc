@@ -328,7 +328,7 @@ public:
 
                 bool found = false;
 
-                std::cout <<"Searching for " << n << ".\n";
+                std::cout <<"Searching for " << n << "...";
                 for (size_t j = 0; j < state.size(); ++j) {
                     
                     /* not interested in itself */
@@ -341,7 +341,7 @@ public:
 
                         found = true;
 
-                        std::cout <<"Found in Likelihood " << j << "\n";
+                        std::cout <<" - found in Likelihood " << j << ".\n";
 
                         /* acquire initial value & build the map of all shared parameters. 
                          * not necessary when the name has already been requested by someone else, but it does not hurt either
