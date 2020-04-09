@@ -20,6 +20,10 @@ bool verbose = false;
 
 #include <cmath>
 
+template <typename T> int sgn(T val) {
+    return (T(0) < val) - (val < T(0));
+}
+
 #include "enoki/special.h"
 #include "timer.h"
 #include "pcg32.h"
@@ -779,7 +783,7 @@ public:
 
     int maxPeriodLength = 6;
     int minOscillations = 20;
-    Float defaultHeatCapacity = 1;
+    Float defaultHeatCapacity = -1;
 
     AdvCoolingTarget(Float coolingSlope, Float Tinit) : slope(coolingSlope), T(Tinit) {
         DeltaT = T/4;
@@ -810,10 +814,11 @@ public:
                     std::cout << "heatcap " << heatCapacity << "\n";
                     if (heatCapacity < 0) { 
                         std::cout << "Negative heat capacity due to nonconverged estimation. Continuing... \n"; 
-                        heatCapacity = defaultHeatCapacity;
+                        if (defaultHeatCapacity > 0) 
+                            heatCapacity = defaultHeatCapacity;
                     }
 
-                    DeltaT = slope*T/(relaxationTime*std::sqrt(heatCapacity));
+                    DeltaT = sgn(heatCapacity)*slope*T/(relaxationTime*std::sqrt(std::abs(heatCapacity)));
 
                     std::cout << "deltaT = " << DeltaT << ", this is " << DeltaT/T << " frac of T.\n";
 
