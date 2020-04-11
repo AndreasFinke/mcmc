@@ -931,17 +931,22 @@ public:
                 target->step(rnd, rec, Float(i)/nAdjust, true, nAccept);
             }
 
-            if ((i > nBurnin) && (i % thinning) == 0 && recordSamples) 
-                samples.push_back(std::make_shared<State>(*(target->state))); 
+            if ((i > nBurnin) && (i % thinning) == 0) {
+                loglikes.push_back(target->state->loglikelihood());
+                if (recordSamples)
+                    samples.push_back(std::make_shared<State>(*(target->state))); 
+            }
+
             if ((i > nBurnin) && computeMean)
                 mean->addCoordsOf(target->state);
 
             if (!recordSamples) { /* noticed slowdown almost 2x when *not* saving samples. This seems to 
                                      be due to many immediate deletes of subspace states when share_ptrs go 
                                      out of scope. Avoid this by collecting some and deleting them at once. 
-                                     On my system (Mac Catalina) this resolved the issue. */ 
+                                     On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
+                                     that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
                 static std::vector<std::shared_ptr<State>> garbage;
-                const int nGarbage = 5000;
+                const int nGarbage = 50;
                 static int curr = 0;
                 if (curr < nGarbage) 
                     garbage.push_back(std::make_shared<State>(*(target->state)));
@@ -1020,16 +1025,16 @@ public:
     
     py::array_t<Float> getLoglikes() {
 
-        if (samples.size() == 0) { 
-            std::cout << "Requested weights, but none are present\n";
+        if (loglikes.size() == 0) { 
+            std::cout << "Requested loglikes, but none are present\n";
             return {};
         }
     
-        py::array_t<Float> ret(/*times number of chains */samples.size());
+        py::array_t<Float> ret(/*times number of chains */loglikes.size());
 
-        for (size_t i = 0; i < samples.size(); ++i)  { 
+        for (size_t i = 0; i < loglikes.size(); ++i)  { 
             
-            ret.mutable_data()[i] = samples[i]->loglikelihood();
+            ret.mutable_data()[i] = loglikes[i];
         }
 
         return ret;
@@ -1040,6 +1045,7 @@ public:
 protected:
 
     std::vector< std::shared_ptr<State> > samples;
+    std::vector<Float> loglikes;
     std::shared_ptr<State> mean;
 
 };
