@@ -52,6 +52,7 @@ public:
     Float initialBetaMild = 2;
     Float initialBetaHigh = 7;
     Float initialDelay = 14;
+    Float initialMissedDeaths = 30;
 
     bool computeR = false;
     bool computeOnlyLikelihood = false;
@@ -307,7 +308,7 @@ public:
         if (!data.computeOnlyLikelihood) { 
             setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
                     data.discontinuousVals, 
-                    {data.initialBetaMild}, {data.initialBetaHigh}, {data.initialDelay}, {1}, 
+                    {data.initialBetaMild}, {data.initialBetaHigh}, {data.initialDelay}, {data.initialMissedDeaths}, 
                     std::vector(nDaysTotal, Float(0)), 
                     std::vector(nDaysTotal, Float(0)), 
                     std::vector(nDaysTotal, Float(0)), 
@@ -504,9 +505,12 @@ public:
             if (data.computeR) {
                 for (int i = 0; i < nDaysTotal; ++i) {
                     Float R = 0;
+                    Float mildcumsum = 0, highcumsum = 0;
                     for (int j = 0; j < traj.nDays && (j+i) < nDaysTotal; ++j) {
                         Float nSusceptible = popSize - incubatingBuf[shift][i+j] - asymptomaticBuf[shift][i+j] - mildBuf[shift][i+j] - seriousBuf[shift][i+j] - recoveredBuf[shift][i+j] - deadBuf[shift][i+j];
-                        R += getCoordsAt("totalBehavior")[i+j]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*traj.infectiousMild[j] + getCoordsAt("betaHigh")[0]*traj.infectiousHigh[j]);
+                        mildcumsum += traj.getMildlyInfectious(j);
+                        highcumsum += traj.getHighlyInfectious(j);
+                        R += getCoordsAt("totalBehavior")[i+j]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*mildcumsum + getCoordsAt("betaHigh")[0]*highcumsum);
                     }
                     getCoordsAt("R")[i] += shift_weight(shift)*R;
                     //getCoordsAt("R")[i] = R;
@@ -541,7 +545,14 @@ public:
 
         /* compute and copy weighted loglikelihood to loglike */
         for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
-            Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - 0*getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
+            
+            if (std::isnan(getCoordsAt("dead")[i+maxDelayDaysTilData]) ) {
+                /* never accept crazy states with exploding number of cases leading to NaN */
+                loglike = -1e10;
+                break;
+            }
+
+            Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
 
             loglike +=(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
         }
@@ -559,32 +570,61 @@ public:
         bool big3 = rnd.nextFloat() < 0.6f;
         bool big4 = rnd.nextFloat() < 0.6f;
         bool big5 = rnd.nextFloat() < 0.6f;
-        //bool big6 = rnd.nextFloat() < 0.6f;
+        bool big6 = rnd.nextFloat() < 0.4f;
+
+
         /* start time */
-        if (rnd.nextFloat() < 0.3f) {
+        bool changedBeta = false;
+        if (rnd.nextFloat() < 0.4f) {
+
             COUT("del ");
-            newstate->getCoordsAt("delay")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
-            if (big1) {  
-                newstate->getCoordsAt("delay")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+            Float deltaDelay = 10*(rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
+
+            if (!big1)
+                deltaDelay /= 10;
+            else
                 COUT("(L) ")
+
+            Float oldDelay = newstate->getCoordsAt("delay")[0];
+            Float newDelay = oldDelay + deltaDelay;
+            bound(newDelay, Float(5), Float(maxDelayDaysTilData));
+            newstate->getCoordsAt("delay")[0] = newDelay;
+            /* often, propose also a step in beta that is correlated to preserve death number after tPivot days. This should increase acceptance rate. 
+             * Note that the i->j proposal probability agrees with j->i (deltaDelay of opposite sign leads to undoing the beta correction since 
+             * corrfac -> corrfac^(-1) ) */
+            if (rnd.nextFloat() < 0.8f) {
+                
+                COUT("(with beta) ")
+                Float tPivot = 5+10*rnd.nextDouble();
+                Float corrfac = (tPivot + oldDelay)/(tPivot + newDelay);
+                newstate->getCoordsAt("betaMild")[0] *= corrfac;
+                newstate->getCoordsAt("betaHigh")[0] *= corrfac;
+
+                /* assume beta's are not increasing beyond their bound here, i.e. bound should be large enough to be never reached given the data.
+                 * otherwise, bounding them will destroy what was said in the last comment. Lower bound zero is no issue as we multiplied by a positive number.
+                 * Anyway bound them for safety... */
+                //changedBeta = true;
+
+                bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
+                bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
+
             }
-            bound(newstate->getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
         }
         
         /* missed Deaths */
 
-        //if (rnd.nextFloat() < 0.9f) { 
-            //Float sample = rnd.nextDouble()-Float(0.5);
-            /* here we propose small numbers with greater probability */
-            //newstate->getCoordsAt("missedDeaths")[0] += sample*sample*10*std::min(stepsizeCorrectionFac, Float(1));
-            //if (big6) 
-                //newstate->getCoordsAt("missedDeaths")[0] += (rnd.nextDouble()-Float(0.5))*100*std::min(stepsizeCorrectionFac, Float(1));
-            //bound(newstate->getCoordsAt("missedDeaths")[0], Float(0), Float(30));
-        //}
+        if (rnd.nextFloat() < 0.5f) { 
+            Float sample = rnd.nextDouble()-Float(0.5);
+             //here we propose small numbers with greater probability 
+            newstate->getCoordsAt("missedDeaths")[0] += sample*sample*std::min(stepsizeCorrectionFac, Float(1));
+            if (big6) 
+                newstate->getCoordsAt("missedDeaths")[0] += (rnd.nextDouble()-Float(0.5))*10*std::min(stepsizeCorrectionFac, Float(1));
+            bound(newstate->getCoordsAt("missedDeaths")[0], Float(0), Float(100));
+        }
 
 
         /* betas */
-        if (rnd.nextFloat() < 0.9f) {
+        if (rnd.nextFloat() < 0.5f && !changedBeta) {
             COUT("bet ")
             if (!big2) 
                 newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
@@ -592,22 +632,22 @@ public:
                 newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
-            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
             if (!big3) 
                 newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
                 newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
-            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
 
+            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
+            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
             if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
                     std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
         }
 
         /* discont. vals */
 
-        if (rnd.nextFloat() < 0.9f) { 
+        if (rnd.nextFloat() < 0.6f) { 
             COUT("discon ")
 
             /* how many to sample? */
@@ -695,7 +735,7 @@ public:
 
         //return;
         bound(getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
-        bound(getCoordsAt("missedDeaths")[0], Float(0), Float(30));
+        bound(getCoordsAt("missedDeaths")[0], Float(0), Float(100));
 
         Float lastVal = 1;
         for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) {
