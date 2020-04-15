@@ -17,7 +17,9 @@ bool verbose = false;
 #include <set>
 #include <list>
 #include <type_traits>
+#include <assert.h>
 
+#include <tbb/tbb.h>
 #include <cmath>
 
 template <typename T> int sgn(T val) {
@@ -91,6 +93,14 @@ public:
         auto newstate = copy();
         return Proposal{newstate, 1};
     }
+
+    virtual std::vector<Float> sampleInitialConditions(pcg32& rnd) {
+        return {};
+    }
+
+    virtual void setInitialConditions(const std::vector<Float> ics) {
+    }
+
     virtual void force_bounds() {}
     virtual ~SubspaceState() {};
 
@@ -219,6 +229,7 @@ protected:
 public:
 
     std::vector< std::shared_ptr<SubspaceState> > state;
+    std::vector< std::vector<Float>  > initialConditions;
 
     /* for each, i-th, SubspaceState in state, we keep a corresponding i-th element in dependencies:
      * a list of the other SubspaceStates that depend on the i-th SubspaceStates, together with a flag if 
@@ -278,10 +289,21 @@ public:
         }
     }
 
-    void test(Float a) {
-        state[0]->getCoords()[4][0] += a;
+    std::vector< std::vector<Float> > sampleInitialConditions(pcg32& rnd) {
+        initialConditions.resize(0);
+        for (size_t i = 0; i < state.size(); ++i) {
+            initialConditions.push_back(state[i]->sampleInitialConditions(rnd));
+        }
+        return initialConditions;
     }
 
+    void setInitialConditions(const std::vector< std::vector<Float> >& ics) {
+        assert(ics.size == state.size());
+        initialConditions = ics;
+        for (size_t i = 0; i < state.size(); ++i) {
+            state[i]->setInitialConditions(ics[i]);
+        }
+    }
     std::map<std::string, std::vector<Float>> getAll() { 
         std::map<std::string, std::vector<Float>> ret = {};
         for (size_t i = 0; i < state.size(); ++i) { 
@@ -659,6 +681,10 @@ public:
         return 1;
     }
 
+    Float probability(Float time) {
+        return weight()*std::exp(beta(time)*state->loglikelihood());
+    }
+
     virtual bool step(pcg32& rnd, ProposalRecord& rec, Float time, bool isSubspaceRandom, int& nAccept) {
 
         if (state == nullptr) { 
@@ -694,6 +720,11 @@ public:
         return true;
     }
 
+    virtual std::shared_ptr<SimpleTarget> deep_copy() {
+        SimpleTarget t(*this);
+        t.state = state->deep_copy();
+        return std::make_shared<SimpleTarget>(t);
+    }
 
     virtual ~SimpleTarget() {} 
 
@@ -711,6 +742,12 @@ public:
 
     Float beta(Float time) override { 
         return std::exp(time*slope)/Tinit;
+    }
+    
+    std::shared_ptr<SimpleTarget> deep_copy() override {
+        CoolingTarget t(*this);
+        t.state = state->deep_copy();
+        return std::make_shared<CoolingTarget>(t);
     }
 
     virtual ~CoolingTarget() {} 
@@ -837,6 +874,11 @@ public:
         return ret; 
     }
 
+    std::shared_ptr<SimpleTarget> deep_copy() override {
+        AdvCoolingTarget t(*this);
+        t.state = state->deep_copy();
+        return std::make_shared<AdvCoolingTarget>(t);
+    }
     virtual ~AdvCoolingTarget() {} 
 
 };
@@ -1054,6 +1096,117 @@ protected:
 
 };
 
+template<class ChainType> 
+class ChainManager  { 
+public:
+    ChainManager(std::shared_ptr<SimpleTarget> target, size_t nChainReservoir, size_t nChain) : target(target), nChainReservoir(nChainReservoir), nChain(nChain)  {
+
+        pcg32 rnd(0, 0);
+
+        /*ICs, probability */
+        std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+        /*the corresponding discrete CDF as a float array*/
+        std::vector<double> discreteCDF;
+        double total = 0.0;
+
+        std::cout << "Constructing a discrete distribution of " << nChainReservoir << " random states. " << std::endl; 
+        while (trialChainICs.size() < nChainReservoir) {
+
+            /* sample some new ICs and evaluate posterior */
+            target->state->sampleInitialConditions(rnd);
+            target->state->eval();
+
+            /* fix t = 0 for time dependent temperature targets */
+            Float prob = target->probability(0);
+
+            if ( (prob > 0) && !std::isnan(prob) && !std::isinf(prob) ) {
+                trialChainICs.push_back(std::make_pair(target->state->initialConditions, target->probability(0))); 
+                total += prob; 
+            }
+        }
+
+        std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
+        discreteCDF.push_back(trialChainICs[0].second);
+        for (size_t i = 1; i < nChainReservoir; ++i) 
+            discreteCDF.push_back(discreteCDF[i-1] + trialChainICs[i].second);
+        discreteCDF.back() = 1.000001*total; //fight rounding errors: has to be larger than largest random number for what comes now 
+
+        std::map<size_t, size_t> old2new; 
+        
+        for (size_t i = 0; i < nChain; ++i) {
+            double x = rnd.nextDouble()*total;
+            auto iter = std::upper_bound(discreteCDF.begin(), discreteCDF.end(), x);
+            size_t idx = iter - discreteCDF.begin();
+            /* is it the first time these ICs are sampled? */
+            if (old2new.find(idx) == old2new.end()) {
+                /* no need to remember the probability of the initial state */
+                chainICs.push_back(std::make_pair(std::move(trialChainICs[idx].first), 1)); 
+                /* save the index of this chain in the current chainICs array in a map as a function of the index into the trialChainICs */
+                old2new[idx] = chainICs.size()-1;  
+            }
+            else {
+                std::cout << "Note: same chain " << old2new[idx] << " that has been picked " << chainICs[old2new[idx]].second << " times was picked again." << std::endl;
+                --i;
+                chainICs[old2new[idx]].second += 1;
+            }
+
+        }
+
+        std::cout << "Selection completed." << std::endl << std::endl; 
+    }
+
+    void runChains(size_t nSteps, size_t thinning) {
+
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
+                [&](tbb::blocked_range<size_t> range) {
+                
+                //SamplefX samples; 
+                //set_slices(samples, ChainType::nSamples);
+
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+         //       for (size_t i = 0; i < chains.size(); ++i) {
+                    std::cout << "Started chain " << i << "." << std::endl; 
+          
+
+                    std::shared_ptr<SimpleTarget> tar = target->deep_copy();
+                    tar->state->setInitialConditions(chainICs[i].first);
+
+                    ChainType chain(tar, i);
+                    Float weight = chainICs[i].second;
+
+                    chain.run(nSteps, 0, 0, thinning);
+
+                }
+
+
+            }
+        ); 
+        //size_t nAccept = 0;
+        //for (size_t i = 0; i < chains.size(); ++i) {
+            //nAccept += chains[i]->nAccept;
+        //}
+
+        //std::cout << "Acceptance rate = " << float(nAccept)/(nSteps*nChain) << std::endl; 
+        std::cout << "Chain runs completed." << std::endl << std::endl;
+        //std::cout << "Accumulating results from the chains. " << std::endl;
+
+        //for (auto& c : chains)
+            //for (auto m : c->measurements)
+                //m->accumulate(nChain); 
+
+
+        //std::cout << "Postprocessing accumulated measurement results. " << std::endl;
+        //for (auto m : chains[0]->measurements)
+            //m->postprocess(nChain); 
+
+    }
+protected:
+    std::vector< std::pair<std::vector<std::vector<Float>>, int>> chainICs;
+    size_t nChainReservoir = 1;
+    size_t nChain = 1;
+    std::shared_ptr<SimpleTarget> target;
+};
 class GradientDecent {
 
 public:
