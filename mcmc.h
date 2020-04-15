@@ -98,7 +98,7 @@ public:
         return {};
     }
 
-    virtual void setInitialConditions(const std::vector<Float> ics) {
+    virtual void setInitialConditions(const std::vector<Float>& ics) {
     }
 
     virtual void force_bounds() {}
