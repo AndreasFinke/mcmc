@@ -109,7 +109,6 @@ PYBIND11_MODULE(mcmc, m) {
         .def("loglike", &State::loglikelihood)
         .def("force_bounds", &State::force_bounds)
         .def("getAll", &State::getAll)
-        .def("test", &State::test)
         .def_readwrite("sharedDependencyMaxDepth", &State::sharedDependencyMaxDepth);
     py::class_<MyState, State, std::shared_ptr<MyState>>(m, "MyState")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
@@ -141,6 +140,9 @@ PYBIND11_MODULE(mcmc, m) {
         .def("getLoglikes", &MetropolisChain::getLoglikes)
         .def_readwrite("computeMean", &MetropolisChain::computeMean)
         .def_readwrite("recordSamples", &MetropolisChain::recordSamples);
+    py::class_<ChainManager<MetropolisChain>>(m, "ChainManager")
+        .def(py::init<std::shared_ptr<SimpleTarget>, size_t, size_t>())
+        .def("runChains", &ChainManager<MetropolisChain>::runChains);
     py::class_<GradientDecent>(m, "GradientDecent")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<State>, Float>())
