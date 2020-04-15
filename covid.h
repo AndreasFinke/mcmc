@@ -558,12 +558,16 @@ public:
         }
 
     } 
-#define COUT(str) ; //std::cout << str;
+#define COUT(str) ; // std::cout << str;
     //Proposal step_impl(pcg32& rnd, const SharedParams& shared) const override {
     Proposal step(pcg32& rnd, const SharedParams& shared) const override {
 
         COUT("\n")
         auto newstate = copy();
+        //newstate->getCoordsAt("delay")[0] += 0.001;
+        //bound(newstate->getCoordsAt("delay")[0], Float(0), Float(maxDelayDaysTilData-1));
+        //newstate->eval(shared);
+        //return Proposal{newstate, 1};
 
         bool big1 = rnd.nextFloat() < 0.6f;
         bool big2 = rnd.nextFloat() < 0.6f;
@@ -578,13 +582,13 @@ public:
         if (rnd.nextFloat() < 0.4f) {
 
             COUT("del ");
-            Float deltaDelay = 10*(rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
+            Float deltaDelay = stepsizeCorrectionFac*6*(rnd.nextDouble()-0.5);//*10*std::min(stepsizeCorrectionFac, Float(1));
 
             if (!big1)
                 deltaDelay /= 10;
             else
                 COUT("(L) ")
-
+            COUT(deltaDelay << " ");
             Float oldDelay = newstate->getCoordsAt("delay")[0];
             Float newDelay = oldDelay + deltaDelay;
             bound(newDelay, Float(5), Float(maxDelayDaysTilData));
@@ -595,10 +599,17 @@ public:
             if (rnd.nextFloat() < 0.8f) {
                 
                 COUT("(with beta) ")
-                Float tPivot = 5+10*rnd.nextDouble();
+                Float tPivot = 1+10*rnd.nextDouble();
                 Float corrfac = (tPivot + oldDelay)/(tPivot + newDelay);
                 newstate->getCoordsAt("betaMild")[0] *= corrfac;
                 newstate->getCoordsAt("betaHigh")[0] *= corrfac;
+
+                for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
+                    if (!data.discontinuousValsFixed[i]) { 
+                        newstate->getCoordsAt("discontinuousVals")[i] /= corrfac;
+                        bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+                    }
+                }
 
                 /* assume beta's are not increasing beyond their bound here, i.e. bound should be large enough to be never reached given the data.
                  * otherwise, bounding them will destroy what was said in the last comment. Lower bound zero is no issue as we multiplied by a positive number.
@@ -616,31 +627,37 @@ public:
         if (rnd.nextFloat() < 0.5f) { 
             Float sample = rnd.nextDouble()-Float(0.5);
              //here we propose small numbers with greater probability 
-            newstate->getCoordsAt("missedDeaths")[0] += sample*sample*std::min(stepsizeCorrectionFac, Float(1));
+            //newstate->getCoordsAt("missedDeaths")[0] += sample*sample*std::min(stepsizeCorrectionFac, Float(1));
+            newstate->getCoordsAt("missedDeaths")[0] += stepsizeCorrectionFac*sample;
             if (big6) 
-                newstate->getCoordsAt("missedDeaths")[0] += (rnd.nextDouble()-Float(0.5))*10*std::min(stepsizeCorrectionFac, Float(1));
+                newstate->getCoordsAt("missedDeaths")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*10;
+                //newstate->getCoordsAt("missedDeaths")[0] += (rnd.nextDouble()-Float(0.5))*10*std::min(stepsizeCorrectionFac, Float(1));
             bound(newstate->getCoordsAt("missedDeaths")[0], Float(0), Float(100));
         }
 
 
         /* betas */
-        if (rnd.nextFloat() < 0.5f && !changedBeta) {
+        if (rnd.nextFloat() < 0.5f) {
             COUT("bet ")
             if (!big2) 
-                newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.010);
+                //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+                newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.1);
+                //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
             if (!big3) 
-                newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.010);
+                //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
+                newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.1);
+                //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
 
-            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
-            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
+            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
+            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
             if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
                     std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
         }
@@ -680,9 +697,11 @@ public:
                 if (x < 2/nNotFixed) {
                     COUT(i << " ")
                     if (!big4) 
-                        newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                        newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.001);
+                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
                     else { 
-                        newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+                        newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.01);
+                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
                     }
 
                     /* bound between left and right Val */
@@ -705,9 +724,11 @@ public:
             Float T = data.deathsPerDay.size(); 
             double x = rnd.nextDouble();
             Float omega = 2*Float(3.1415)/T * 5 * x*x;
-            Float A     = std::min(Float(1), stepsizeCorrectionFac)*0.1*(rnd.nextDouble()-0.5); /*neg A realized by phase */
+            //Float A     = std::min(Float(1), stepsizeCorrectionFac)*0.1*(rnd.nextDouble()-0.5); [>neg A realized by phase <]
+            Float A     = stepsizeCorrectionFac*0.0005*(rnd.nextDouble()-0.5); /*neg A realized by phase */
             if (big5)  { 
-                A += std::min(Float(1), stepsizeCorrectionFac)*(rnd.nextDouble()-0.5); /*neg A realized by phase */
+                //A += std::min(Float(1), stepsizeCorrectionFac)*(rnd.nextDouble()-0.5); [>neg A realized by phase <]
+                A += stepsizeCorrectionFac*0.0005*(rnd.nextDouble()-0.5); /*neg A realized by phase */
                 COUT("(L) ")
             }
 
