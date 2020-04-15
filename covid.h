@@ -350,6 +350,25 @@ public:
 
     ~DiseaseSpread() {} 
 
+    std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
+        std::vector<Float> ret = {};
+        ret.push_back(10*rnd.nextFloat());
+        ret.push_back(10*rnd.nextFloat());
+        ret.push_back(maxDelayDaysTilData*rnd.nextFloat());
+
+        if (ret[0] > ret[1])
+            std::swap(ret[0], ret[1]);
+
+        setInitialConditions(ret);
+        return ret;
+    }
+
+    void setInitialConditions(const std::vector<Float>& ics) override {
+        getCoordsAt("betaMild")[0] = ics[0];
+        getCoordsAt("betaHigh")[0] = ics[1];
+        getCoordsAt("delay")[0] = ics[2];
+    }
+
     void eval(const SharedParams& shared) override {
 
         loglike = 0;
