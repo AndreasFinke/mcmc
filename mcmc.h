@@ -1130,8 +1130,10 @@ public:
             if (trialChainICs[i].second > maxsofar)
                 maxsofar = trialChainICs[i].second;
 
-        for (size_t i = 0; i < trialChainICs.size(); ++i)  
+        for (size_t i = 0; i < trialChainICs.size(); ++i)  { 
             trialChainICs[i].second = std::exp(trialChainICs[i].second - maxsofar);
+            total += trialChainICs[i].second; 
+        }
 
         std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
         discreteCDF.push_back(trialChainICs[0].second);
