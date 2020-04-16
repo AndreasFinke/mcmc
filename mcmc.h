@@ -681,8 +681,8 @@ public:
         return 1;
     }
 
-    Float probability(Float time) {
-        return weight()*std::exp(beta(time)*state->loglikelihood());
+    Float logprobability(Float time) {
+        return std::log(weight()) + beta(time)*state->loglikelihood();
     }
 
     virtual bool step(pcg32& rnd, ProposalRecord& rec, Float time, bool isSubspaceRandom, int& nAccept) {
@@ -1117,13 +1117,21 @@ public:
             target->state->eval();
 
             /* fix t = 0 for time dependent temperature targets */
-            Float prob = target->probability(0);
+            Float prob = target->logprobability(0);
 
-            if ( (prob > 0) && !std::isnan(prob) && !std::isinf(prob) ) {
-                trialChainICs.push_back(std::make_pair(target->state->initialConditions, target->probability(0))); 
-                total += prob; 
+            if ( !std::isnan(prob) && !std::isinf(prob) ) {
+                trialChainICs.push_back(std::make_pair(target->state->initialConditions, prob)); 
             }
         }
+
+        /* normalize all probabilities by the same factor, bt shifting log prob such that the best sits at zero. this is to avoid all of the exponentials being rounded to zero for loglikelihoods that may be of the order of -1e7... */
+        double maxsofar = -1e20;
+        for (size_t i = 0; i < trialChainICs.size(); ++i)
+            if (trialChainICs[i].second > maxsofar)
+                maxsofar = trialChainICs[i].second;
+
+        for (size_t i = 0; i < trialChainICs.size(); ++i)  
+            trialChainICs[i].second = std::exp(trialChainICs[i].second - maxsofar);
 
         std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
         discreteCDF.push_back(trialChainICs[0].second);
