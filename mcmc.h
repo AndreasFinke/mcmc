@@ -1121,6 +1121,8 @@ public:
 
             if ( !std::isnan(prob) && !std::isinf(prob) ) {
                 trialChainICs.push_back(std::make_pair(target->state->initialConditions, prob)); 
+            std::cout << target->state->loglikelihood() << " " << prob << "\n";
+
             }
         }
 

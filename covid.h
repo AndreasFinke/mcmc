@@ -359,6 +359,17 @@ public:
         if (ret[0] > ret[1])
             std::swap(ret[0], ret[1]);
 
+        std::vector<Float> vals = {};
+        for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            /* jump over fixed ones */
+            if (data.discontinuousValsFixed[i])
+                continue;
+
+            vals.push_back(rnd.nextDouble());
+        }
+        std::sort(vals.begin(), vals.end(), std::greater<>());
+       
+        ret.insert(ret.end(), vals.begin(), vals.end());
         setInitialConditions(ret);
         return ret;
     }
@@ -367,6 +378,13 @@ public:
         getCoordsAt("betaMild")[0] = ics[0];
         getCoordsAt("betaHigh")[0] = ics[1];
         getCoordsAt("delay")[0] = ics[2];
+        for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            /* jump over fixed ones */
+            if (data.discontinuousValsFixed[i])
+                continue;
+            getCoordsAt("discontinuousVals")[i] = ics[3+j];
+            j++;
+        }
     }
 
     void eval(const SharedParams& shared) override {
@@ -596,6 +614,9 @@ public:
         bool big6 = rnd.nextFloat() < 0.4f;
 
 
+        /* correciton to acceptance probability due to measure distortion etc */
+        Float correction = 1;
+
         /* start time */
         bool changedBeta = false;
         if (rnd.nextFloat() < 0.4f) {
@@ -613,30 +634,61 @@ public:
             bound(newDelay, Float(5), Float(maxDelayDaysTilData));
             newstate->getCoordsAt("delay")[0] = newDelay;
             /* often, propose also a step in beta that is correlated to preserve death number after tPivot days. This should increase acceptance rate. 
-             * Note that the i->j proposal probability agrees with j->i (deltaDelay of opposite sign leads to undoing the beta correction since 
-             * corrfac -> corrfac^(-1) ) */
+             * Note that the i->j proposal probability pdf agrees with j->i (deltaDelay of opposite sign leads to undoing the beta correction since 
+             * corrfac -> corrfac^(-1) ) , however see for the measure... */
             if (rnd.nextFloat() < 0.8f) {
                 
                 COUT("(with beta) ")
-                Float tPivot = 1+10*rnd.nextDouble();
+                //Float tPivot = 1+10*rnd.nextDouble();
+                /* the idea is to change delay without changing dramatically the death prediction.
+                 * for this, we need to adjust beta to compensate until ca. when the data starts, to create the same initial situation.
+                 * after, we want to continue as before, that is, need to compensate the change of beta by changes of the discontinuousVals
+                 * if these are fixed, this does not work as well, but if not, it should. 
+                 * So change beta to compensate until first nonfixed discontinuousVal such as to create same number of infected there and then compensate the changed beta
+                 * by changing discontinuousVals to preserve future evolution */
+
+                /* find first nonfixed discontinousVal */
+                Float tPivot = data.discontinuousDays.back();
+                for (size_t i = 0; i < data.discontinuousDays.size(); ++i) { 
+                    if (!data.discontinuousValsFixed[i]) { 
+                        tPivot = data.discontinuousDays[i];
+                        break;
+                    }
+                }
+
                 Float corrfac = (tPivot + oldDelay)/(tPivot + newDelay);
                 newstate->getCoordsAt("betaMild")[0] *= corrfac;
                 newstate->getCoordsAt("betaHigh")[0] *= corrfac;
 
+                /* such nonlinear trafos distort the measure and introduce nontrivial ratios for the proposal probabilities. 
+                 * (Or, if we choose a distorted measure, the nontrival ratio appears in the ratios of state probabilities instead, but we don't take this view)
+                 * for i->j, pij ~ |derivative of proposal wrt uniform r.v. sample|^-1. 
+                 * \partial (tPivot+oldDelay)/(tPivot+newDelay) / \partial newDelay = -(tPivot+oldDelay)/(tPivot+newDelay)^2 so pij ~ (pivot+new)^2/(pivot+old) 
+                 * for pji (coming back), oldDelay and newDelay are swapped in the result. So pji/pij = (tPivot+old)^2/(tPivot+new) / ( (tPivot+new)^2/ (tPivot+old) ) = corrfac^3
+                 * 
+                 * each beta picks up corrfac^3, so we have corrfac^6 so far */
+
+
+                int nNotFixed = 0;
                 for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
                     if (!data.discontinuousValsFixed[i]) { 
+                        nNotFixed++;
                         newstate->getCoordsAt("discontinuousVals")[i] /= corrfac;
                         bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
                     }
                 }
 
+                /* here, pij ~ (1/(pivot+old))^(-1) = pivot+old. so pji/pij = (pivot+new)/(pivot+old) = 1/corrfac for each of the nNotFixed... */
+
+               correction = std::pow(corrfac, 6-nNotFixed); 
+
                 /* assume beta's are not increasing beyond their bound here, i.e. bound should be large enough to be never reached given the data.
-                 * otherwise, bounding them will destroy what was said in the last comment. Lower bound zero is no issue as we multiplied by a positive number.
+                 * otherwise, bounding them will destroy what was said in the comment above about i->j and j->i having same proposal pdf. Lower bound zero is no issue as we multiplied by a positive number.
                  * Anyway bound them for safety... */
                 //changedBeta = true;
 
-                bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(100));
-                bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(100));
+                bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
+                bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
 
             }
         }
@@ -693,47 +745,67 @@ public:
                     nNotFixed += 1;
             nNotFixed = 0;
 
-            int start = 0;
-            int stop = newstate->getCoordsAt("discontinuousVals").size();
-            int incr = 1;
-            if (rnd.nextDouble() < 0.5) { 
-                std::swap(start, stop);
-                start--;
-                stop--;
-                incr = -1;
-            }
+            //int start = 0;
+            //int stop = newstate->getCoordsAt("discontinuousVals").size();
+            //int incr = 1;
+            //if (rnd.nextDouble() < 0.5) { 
+                //std::swap(start, stop);
+                //start--;
+                //stop--;
+                //incr = -1;
+            //}
             if (big4) 
                 COUT("(L)(")
             else
                 COUT("(")
-            for (size_t i = start; i != stop; i += incr) {
+            //for (size_t i = start; i != stop; i += incr) {
+            std::vector<Float> newvals = {};
+            for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) { 
                 /* jump over fixed ones */
                 if (data.discontinuousValsFixed[i])
                     continue;
 
-                /* sample each not fixed with probability 2/nNotFixed, to do usually about two but sometimes more or less - good if they are (anti)correlated, allowing larger steps */
-                float x = rnd.nextFloat();
-                if (x < 2/nNotFixed) {
-                    COUT(i << " ")
-                    if (!big4) 
-                        newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.001);
-                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
-                    else { 
-                        newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.01);
-                        //newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
-                    }
-
-                    /* bound between left and right Val */
-                    Float lower = 0;
-                    Float upper = 1;
-                    if (i >= 1)
-                        upper = newstate->getCoordsAt("discontinuousVals")[i-1];
-                    if (i < newstate->getCoordsAt("discontinuousVals").size()-1) 
-                        lower = newstate->getCoordsAt("discontinuousVals")[i+1];
-
-                    bound(newstate->getCoordsAt("discontinuousVals")[i], lower, upper);
-                }
+                if (!big4) 
+                    newvals.push_back(newstate->getCoordsAt("discontinuousVals")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.001);
+                else
+                    newvals.push_back(newstate->getCoordsAt("discontinuousVals")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.01);
+                bound(newvals.back(), Float(0), Float(1));
             }
+            std::sort(newvals.begin(), newvals.end(), std::greater<>());
+            for (size_t i = 0, j = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) { 
+                /* jump over fixed ones */
+                if (data.discontinuousValsFixed[i])
+                    continue;
+                newstate->getCoordsAt("discontinuousVals")[i] = newvals[j];
+                j++;
+            }
+
+
+
+                /* sample each not fixed with probability 2/nNotFixed, to do usually about two but sometimes more or less - good if they are (anti)correlated, allowing larger steps */
+                //float x = rnd.nextFloat();
+                //if (x < 2/nNotFixed) {
+                    //COUT(i << " ")
+                    //if (!big4) 
+                        //newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.001);
+                        ////newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
+                    //else { 
+                        //newstate->getCoordsAt("discontinuousVals")[i] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.01);
+                        ////newstate->getCoordsAt("discontinuousVals")[i] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
+                    //}
+
+                    //[> bound between left and right Val <]
+                    //Float lower = 0;
+                    //Float upper = 1;
+                    //if (i >= 1)
+                        //upper = newstate->getCoordsAt("discontinuousVals")[i-1];
+                    //if (i < newstate->getCoordsAt("discontinuousVals").size()-1) 
+                        //lower = newstate->getCoordsAt("discontinuousVals")[i+1];
+
+                    //bound(newstate->getCoordsAt("discontinuousVals")[i], lower, upper);
+                //}
+
+            //}
             COUT(") ")
         }
         /* behaviorfunc */
@@ -767,7 +839,7 @@ public:
         }
             
         newstate->eval(shared);
-        return Proposal{newstate, 1};
+        return Proposal{newstate, correction};
 
     }
 
