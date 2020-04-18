@@ -49,13 +49,12 @@ public:
     std::vector<Float> discontinuousVals;
     std::vector<bool> discontinuousValsFixed;
     
-    Float initialBetaMild = 2;
-    Float initialBetaHigh = 7;
+    Float initialMild0 = 200000;
+    Float initialHigh0 = 100000;
     Float initialDelay = 14;
     Float initialMissedDeaths = 30;
 
     bool computeR = false;
-    bool computeOnlyLikelihood = false;
 
     int fixBehaviorInAdvance = 14;
 };
@@ -75,6 +74,9 @@ public:
      *    infected (mild) go to infected (serious) with probSerious after timeSeriousFromSymptom
      *    infected (serious) go to dead with probLethalIfSerious after timeLethalAfterSerious 
      */
+
+    int proxyTincub = 4;
+    int proxyTinfec = 8;  
 
     Float timeIncub = 4;
     Float timeIncubSigma = 2;
@@ -296,7 +298,7 @@ public:
     int popSize;
     int nDaysTotal;
 
-    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousVals", "betaMild", "betaHigh", "delay", "missedDeaths", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior", "R"}, false, 11), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
+    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousVals", "mild0", "high0", "delay", "missedDeaths", "betaMild", "betaHigh", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior", "R"}, false, 13), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
  
         //requestedSharedNames = {};
         nDaysTotal = maxDelayDaysTilData + nPredictDays + data.deathsPerDay.size();
@@ -305,38 +307,38 @@ public:
         if (data.computeR)
             Rsize = nDaysTotal;
 
-        if (!data.computeOnlyLikelihood) { 
-            setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
-                    data.discontinuousVals, 
-                    {data.initialBetaMild}, {data.initialBetaHigh}, {data.initialDelay}, {data.initialMissedDeaths}, 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(1)),
-                    std::vector(Rsize, Float(0))} );
-        }
-        else { /*spare some allocations... */
-            setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
-                    data.discontinuousVals, 
-                    {data.initialBetaMild}, {data.initialBetaHigh}, {data.initialDelay}, {1}, 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(1, Float(0)), 
-                    std::vector(nDaysTotal, Float(0)), 
-                    std::vector(nDaysTotal, Float(1)),
-                    std::vector(Rsize, Float(0))} );
-        }
+        setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
+                data.discontinuousVals, 
+                {data.initialMild0}, {data.initialHigh0}, {data.initialDelay}, {data.initialMissedDeaths}, 
+                {0}, {0},
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(0)), 
+                std::vector(nDaysTotal, Float(1)),
+                std::vector(Rsize, Float(0))} );
+
+        proxy = new Float[params.proxyTinfec];
+        
+        getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
+        getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
+
+        /* let's assume the solution in the beginning is mildly and highly infectious = infected growing exponentially for delay days as exp(tdelay*betaMild) and exp(tdelay*betaHigh)
+         * then we get the betas as defined by the differential equation as */
+        //getCoordsAt("betaMild")[0] = std::exp(std::log(getCoordsAt("mild0")[0])/getCoordsAt("delay")[0]*3)/3;
+        //getCoordsAt("betaHigh")[0] = std::log(getCoordsAt("high0")[0])/getCoordsAt("delay")[0]; 
+        //getCoordsAt("betaHigh")[0] = std::exp(std::log(getCoordsAt("high0")[0])/getCoordsAt("delay")[0]*3)/3;
+        /* note that as beta is defined from the differential equation (very implicitely but still) this defines mild0 and high0 as being the number of infected/infectious in this crude approxmation, and being
+         * less meaningful without the approximation. There is little point providing plots for these quantities, they are just rough proxies for the infected/infectious people at the first death. For example
+         * we always have high0 > mild0 but the number of highly infectious can be much smaller, since it is less likely to happen once someone get infected (when chance for symptomatic is << 50%) */
+
+        //for (int i = 0; i < data.discontinuousVals.size(); ++i) 
+            //getCoordsAt("discontinuousValsTimesBetaMild")[i] = data.discontinuousVals[i]*getCoordsAt("betaMild");
 
         for (int i = 0; i < nDaysTotal; ++i) 
             getCoordsAt("capacity")[i] = cap0 + std::max(capIncrRate*(i-maxDelayDaysTilData), Float(0.0));
@@ -348,13 +350,15 @@ public:
         }
     }
 
-    ~DiseaseSpread() {} 
+    ~DiseaseSpread() {
+        //delete[] proxy;
+    } 
 
     std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
         std::vector<Float> ret = {};
-        ret.push_back(10*rnd.nextFloat());
-        ret.push_back(10*rnd.nextFloat());
-        ret.push_back(maxDelayDaysTilData*rnd.nextFloat());
+        ret.push_back(3000 + 2000*rnd.nextDouble());
+        ret.push_back(3000 + 2000*rnd.nextDouble());
+        ret.push_back(20+(maxDelayDaysTilData-20)*rnd.nextDouble());
 
         if (ret[0] > ret[1])
             std::swap(ret[0], ret[1]);
@@ -375,8 +379,8 @@ public:
     }
 
     void setInitialConditions(const std::vector<Float>& ics) override {
-        getCoordsAt("betaMild")[0] = ics[0];
-        getCoordsAt("betaHigh")[0] = ics[1];
+        getCoordsAt("mild0")[0] = ics[0];
+        getCoordsAt("high0")[0] = ics[1];
         getCoordsAt("delay")[0] = ics[2];
         for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
             /* jump over fixed ones */
@@ -390,6 +394,15 @@ public:
     void eval(const SharedParams& shared) override {
 
         loglike = 0;
+
+        //getCoordsAt("betaMild")[0] = std::log(getCoordsAt("mild0")[0])/getCoordsAt("delay")[0]; 
+        //getCoordsAt("betaHigh")[0] = std::log(getCoordsAt("high0")[0])/getCoordsAt("delay")[0]; 
+        
+        //getCoordsAt("betaMild")[0] = std::exp(std::log(getCoordsAt("mild0")[0])/getCoordsAt("delay")[0]*3)/3;
+        //getCoordsAt("betaHigh")[0] = std::exp(std::log(getCoordsAt("high0")[0])/getCoordsAt("delay")[0]*3)/3;
+
+        getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
+        getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
 
         auto piecewise = [&] (int k) -> Float { 
             int found = -1;
@@ -555,7 +568,7 @@ public:
             }
 
             /* copy weighted result to output */
-            if (!data.computeOnlyLikelihood) { 
+            //if (!data.computeOnlyLikelihood) { 
                 if (shift == 1) { 
                 multset(getCoordsAt("mildlyInfectious"), mildlyInfectiousBuf[shift], shift_weight(shift));
                 multset(getCoordsAt("highlyInfectious"), highlyInfectiousBuf[shift], shift_weight(shift));
@@ -575,7 +588,7 @@ public:
                 multadd(getCoordsAt("recovered"), recoveredBuf[shift], shift_weight(shift));
                 multadd(getCoordsAt("dead"), deadBuf[shift], shift_weight(shift));
                 }
-            }
+            //}
 
 
         } // shift
@@ -618,7 +631,6 @@ public:
         Float correction = 1;
 
         /* start time */
-        bool changedBeta = false;
         if (rnd.nextFloat() < 0.4f) {
 
             COUT("del ");
@@ -631,15 +643,15 @@ public:
             COUT(deltaDelay << " ");
             Float oldDelay = newstate->getCoordsAt("delay")[0];
             Float newDelay = oldDelay + deltaDelay;
-            bound(newDelay, Float(5), Float(maxDelayDaysTilData));
+            bound(newDelay, Float(20), Float(maxDelayDaysTilData));
             newstate->getCoordsAt("delay")[0] = newDelay;
             /* often, propose also a step in beta that is correlated to preserve death number after tPivot days. This should increase acceptance rate. 
              * Note that the i->j proposal probability pdf agrees with j->i (deltaDelay of opposite sign leads to undoing the beta correction since 
              * corrfac -> corrfac^(-1) ) , however see for the measure... */
-            if (rnd.nextFloat() < 0.8f) {
+            //if (rnd.nextFloat() < 0.8f) {
                 
-                COUT("(with beta) ")
-                //Float tPivot = 1+10*rnd.nextDouble();
+                //COUT("(with beta) ")
+                ////Float tPivot = 1+10*rnd.nextDouble();
                 /* the idea is to change delay without changing dramatically the death prediction.
                  * for this, we need to adjust beta to compensate until ca. when the data starts, to create the same initial situation.
                  * after, we want to continue as before, that is, need to compensate the change of beta by changes of the discontinuousVals
@@ -647,18 +659,18 @@ public:
                  * So change beta to compensate until first nonfixed discontinuousVal such as to create same number of infected there and then compensate the changed beta
                  * by changing discontinuousVals to preserve future evolution */
 
-                /* find first nonfixed discontinousVal */
-                Float tPivot = data.discontinuousDays.back();
-                for (size_t i = 0; i < data.discontinuousDays.size(); ++i) { 
-                    if (!data.discontinuousValsFixed[i]) { 
-                        tPivot = data.discontinuousDays[i];
-                        break;
-                    }
-                }
+                //[> find first nonfixed discontinousVal <]
+                //Float tPivot = data.discontinuousDays.back();
+                //for (size_t i = 0; i < data.discontinuousDays.size(); ++i) { 
+                    //if (!data.discontinuousValsFixed[i]) { 
+                        //tPivot = data.discontinuousDays[i];
+                        //break;
+                    //}
+                //}
 
-                Float corrfac = (tPivot + oldDelay)/(tPivot + newDelay);
-                newstate->getCoordsAt("betaMild")[0] *= corrfac;
-                newstate->getCoordsAt("betaHigh")[0] *= corrfac;
+                //Float corrfac = (tPivot + oldDelay)/(tPivot + newDelay);
+                //newstate->getCoordsAt("betaMild")[0] *= corrfac;
+                //newstate->getCoordsAt("betaHigh")[0] *= corrfac;
 
                 /* such nonlinear trafos distort the measure and introduce nontrivial ratios for the proposal probabilities. 
                  * (Or, if we choose a distorted measure, the nontrival ratio appears in the ratios of state probabilities instead, but we don't take this view)
@@ -669,28 +681,28 @@ public:
                  * each beta picks up corrfac^3, so we have corrfac^6 so far */
 
 
-                int nNotFixed = 0;
-                for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
-                    if (!data.discontinuousValsFixed[i]) { 
-                        nNotFixed++;
-                        newstate->getCoordsAt("discontinuousVals")[i] /= corrfac;
-                        bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
-                    }
-                }
+                //int nNotFixed = 0;
+                //for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) {
+                    //if (!data.discontinuousValsFixed[i]) { 
+                        //nNotFixed++;
+                        //newstate->getCoordsAt("discontinuousVals")[i] /= corrfac;
+                        //bound(newstate->getCoordsAt("discontinuousVals")[i], Float(0), Float(1));
+                    //}
+                //}
 
-                /* here, pij ~ (1/(pivot+old))^(-1) = pivot+old. so pji/pij = (pivot+new)/(pivot+old) = 1/corrfac for each of the nNotFixed... */
+                //[> here, pij ~ (1/(pivot+old))^(-1) = pivot+old. so pji/pij = (pivot+new)/(pivot+old) = 1/corrfac for each of the nNotFixed... <]
 
-               correction = std::pow(corrfac, 6-nNotFixed); 
+               //correction = std::pow(corrfac, 6-nNotFixed); 
 
                 /* assume beta's are not increasing beyond their bound here, i.e. bound should be large enough to be never reached given the data.
                  * otherwise, bounding them will destroy what was said in the comment above about i->j and j->i having same proposal pdf. Lower bound zero is no issue as we multiplied by a positive number.
                  * Anyway bound them for safety... */
                 //changedBeta = true;
 
-                bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
-                bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
+                //bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
+                //bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
 
-            }
+            //}
         }
         
         /* missed Deaths */
@@ -711,26 +723,35 @@ public:
         if (rnd.nextFloat() < 0.5f) {
             COUT("bet ")
             if (!big2) 
-                newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.010);
+                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(10);
+                //newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.010);
                 //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.1);
+                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(100);
+                //newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.1);
                 //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
             if (!big3) 
-                newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.010);
+                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(10);
+                //newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.010);
                 //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.1);
+                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(100);
+                //newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.1);
                 //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
 
-            bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
-            bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
-            if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
-                    std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
+            bound(newstate->getCoordsAt("mild0")[0], Float(3000), Float(5000));
+            //bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
+            bound(newstate->getCoordsAt("high0")[0], Float(3000), Float(5000));
+            //bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
+            
+            //if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
+                    //std::swap(newstate->getCoordsAt("betaHigh")[0], newstate->getCoordsAt("betaMild")[0]);
+            if (newstate->getCoordsAt("high0")[0] < newstate->getCoordsAt("mild0")[0])
+                    std::swap(newstate->getCoordsAt("high0")[0], newstate->getCoordsAt("mild0")[0]);
         }
 
         /* discont. vals */
@@ -846,7 +867,7 @@ public:
     void force_bounds() override {
 
         //return;
-        bound(getCoordsAt("delay")[0], Float(5), Float(maxDelayDaysTilData));
+        bound(getCoordsAt("delay")[0], Float(20), Float(maxDelayDaysTilData));
         bound(getCoordsAt("missedDeaths")[0], Float(0), Float(100));
 
         Float lastVal = 1;
@@ -859,15 +880,72 @@ public:
         for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
                 bound(getCoordsAt("behavior")[i], Float(0), Float(2));
         }
-        bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
-        bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
+        bound(getCoordsAt("mild0")[0], Float(3000), Float(5000));
+        bound(getCoordsAt("high0")[0], Float(3000), Float(5000));
+        //bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
+        //bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
     }
 
     HAS_STEP
 
 private:
 
+    Float proxyModel(Float beta, Float t) {
 
+        //std::memset(proxy, 0, sizeof(Float)*params.proxyTinfec);
+        for (int i = 1; i < params.proxyTinfec; ++i) 
+            proxy[i] = 0;
+        proxy[0] = 1;
+        Float active = 0;
+
+        Float reslow  = 0;
+        Float reshigh = 0;
+        for (int d = 1; d <= int(t)+1; ++d) {
+
+            if (d - params.proxyTinfec >= 0)
+                active -= proxy[(d-params.proxyTinfec)%params.proxyTinfec];
+            if (d - params.proxyTincub >= 0) 
+                active += proxy[(d-params.proxyTincub)%params.proxyTinfec];
+
+            proxy[d%params.proxyTinfec] = active*beta;
+
+            if (d == int(t)) 
+                for (int i = 0; i < params.proxyTinfec; ++i) reslow += proxy[i];
+        }
+        for (int i = 0; i < params.proxyTinfec; ++i) reshigh += proxy[i];
+
+        Float x = t - int(t);
+        return (1-x)*reslow + x*reshigh;
+
+    }
+
+    /* find beta in proxyModel such that at time t there are nInfect infected in this model */
+    Float inverseProxy(Float nInfect, Float t) {
+
+        double beta_low = 0;
+        double beta_high = 50;
+        double beta_mid = (beta_low + beta_high)*0.5;
+        double delta = 1;
+        if (proxyModel(beta_high, t) < nInfect) {
+            std::cout << "Proxy model would need beta > " << beta_high << " to get " << nInfect << " infected people after " << t << "days. Failure.\n";
+            throw;
+        }
+        while (delta > 1e-6) { 
+
+            if (proxyModel(beta_mid, t) > nInfect) 
+                beta_high = beta_mid;
+            else 
+                beta_low = beta_mid;
+
+            beta_mid = (beta_low + beta_high)*0.5;
+            delta = beta_high - beta_low;
+        }
+
+        return beta_mid;
+
+    }
+
+    Float * proxy;
     std::vector<Float> mildlyInfectiousBuf[2];
     std::vector<Float> highlyInfectiousBuf[2];
     std::vector<Float> incubatingBuf[2];
