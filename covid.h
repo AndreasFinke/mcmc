@@ -298,7 +298,7 @@ public:
     int popSize;
     int nDaysTotal;
 
-    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousVals", "mild0", "high0", "delay", "missedDeaths", "betaMild", "betaHigh", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior", "R"}, false, 13), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
+    DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousValsBeta", "mild0", "high0", "delay", "missedDeaths", "discontinuousVals", "betaMild", "betaHigh", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior", "R"}, false, 14), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
  
         //requestedSharedNames = {};
         nDaysTotal = maxDelayDaysTilData + nPredictDays + data.deathsPerDay.size();
@@ -310,6 +310,7 @@ public:
         setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
                 data.discontinuousVals, 
                 {data.initialMild0}, {data.initialHigh0}, {data.initialDelay}, {data.initialMissedDeaths}, 
+                data.discontinuousVals, 
                 {0}, {0},
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
@@ -337,8 +338,8 @@ public:
          * less meaningful without the approximation. There is little point providing plots for these quantities, they are just rough proxies for the infected/infectious people at the first death. For example
          * we always have high0 > mild0 but the number of highly infectious can be much smaller, since it is less likely to happen once someone get infected (when chance for symptomatic is << 50%) */
 
-        //for (int i = 0; i < data.discontinuousVals.size(); ++i) 
-            //getCoordsAt("discontinuousValsTimesBetaMild")[i] = data.discontinuousVals[i]*getCoordsAt("betaMild");
+        for (int i = 0; i < data.discontinuousVals.size(); ++i) 
+            getCoordsAt("discontinuousValsBeta")[i] = data.discontinuousVals[i]*std::sqrt(getCoordsAt("betaMild")[0]);
 
         for (int i = 0; i < nDaysTotal; ++i) 
             getCoordsAt("capacity")[i] = cap0 + std::max(capIncrRate*(i-maxDelayDaysTilData), Float(0.0));
@@ -356,24 +357,32 @@ public:
 
     std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
         std::vector<Float> ret = {};
-        ret.push_back(3000 + 2000*rnd.nextDouble());
-        ret.push_back(3000 + 2000*rnd.nextDouble());
-        ret.push_back(20+(maxDelayDaysTilData-20)*rnd.nextDouble());
+        ret.push_back(3000 + 5000*rnd.nextDouble());
+        ret.push_back(3000 + 5000*rnd.nextDouble());
+        ret.push_back(25+(maxDelayDaysTilData-25)*rnd.nextDouble());
 
         if (ret[0] > ret[1])
             std::swap(ret[0], ret[1]);
+        
 
         std::vector<Float> vals = {};
-        for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
-            /* jump over fixed ones */
-            if (data.discontinuousValsFixed[i])
-                continue;
+        //for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            //[> jump over fixed ones <]
+            //if (data.discontinuousValsFixed[i])
+                //continue;
 
-            vals.push_back(rnd.nextDouble());
-        }
+            //vals.push_back(rnd.nextDouble()*2.5);
+        //}
+        vals.push_back(0.8+rnd.nextDouble()*0.4);
+        vals.push_back(0.55+rnd.nextDouble()*0.3);
+        vals.push_back(0.25+rnd.nextDouble()*0.2);
+        vals.push_back(0.25+rnd.nextDouble()*0.2);
         std::sort(vals.begin(), vals.end(), std::greater<>());
        
         ret.insert(ret.end(), vals.begin(), vals.end());
+
+        ret.push_back(rnd.nextDouble()*3);
+
         setInitialConditions(ret);
         return ret;
     }
@@ -386,9 +395,11 @@ public:
             /* jump over fixed ones */
             if (data.discontinuousValsFixed[i])
                 continue;
-            getCoordsAt("discontinuousVals")[i] = ics[3+j];
+            //getCoordsAt("discontinuousVals")[i] = ics[3+j];
+            getCoordsAt("discontinuousValsBeta")[i] = ics[3+j];
             j++;
         }
+        getCoordsAt("missedDeaths")[0] = ics[7];
     }
 
     void eval(const SharedParams& shared) override {
@@ -403,6 +414,16 @@ public:
 
         getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
         getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
+        
+        for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            getCoordsAt("discontinuousVals")[i] = getCoordsAt("discontinuousValsBeta")[i]/std::sqrt(getCoordsAt("betaMild")[0]);
+            /* prior on behaviour not increasing with measures */
+            if (getCoordsAt("discontinuousVals")[i] > 1) {
+                Float penality = (getCoordsAt("discontinuousVals")[i]-1);
+                penality *= penality;
+                loglike -= 100000*penality;
+            }
+        }
 
         auto piecewise = [&] (int k) -> Float { 
             int found = -1;
@@ -637,7 +658,7 @@ public:
             Float deltaDelay = stepsizeCorrectionFac*6*(rnd.nextDouble()-0.5);//*10*std::min(stepsizeCorrectionFac, Float(1));
 
             if (!big1)
-                deltaDelay /= 10;
+                deltaDelay /= 5;
             else
                 COUT("(L) ")
             COUT(deltaDelay << " ");
@@ -707,7 +728,7 @@ public:
         
         /* missed Deaths */
 
-        if (rnd.nextFloat() < 0.5f) { 
+        if (rnd.nextFloat() < 0.4f) { 
             Float sample = rnd.nextDouble()-Float(0.5);
              //here we propose small numbers with greater probability 
             //newstate->getCoordsAt("missedDeaths")[0] += sample*sample*std::min(stepsizeCorrectionFac, Float(1));
@@ -723,29 +744,29 @@ public:
         if (rnd.nextFloat() < 0.5f) {
             COUT("bet ")
             if (!big2) 
-                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(10);
+                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(40);
                 //newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.010);
                 //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(100);
+                newstate->getCoordsAt("mild0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(200);
                 //newstate->getCoordsAt("betaMild")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(0.1);
                 //newstate->getCoordsAt("betaMild")[0] += (rnd.nextDouble()-Float(0.5))*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
             if (!big3) 
-                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(10);
+                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(40);
                 //newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.010);
                 //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*Float(0.1)*std::min(stepsizeCorrectionFac, Float(1));
             else { 
-                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(100);
+                newstate->getCoordsAt("high0")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-Float(0.5))*Float(200);
                 //newstate->getCoordsAt("betaHigh")[0] += stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*Float(0.1);
                 //newstate->getCoordsAt("betaHigh")[0] += (rnd.nextDouble()-0.5)*std::min(stepsizeCorrectionFac, Float(1));
                 COUT("(L) ")
             }
 
-            bound(newstate->getCoordsAt("mild0")[0], Float(3000), Float(5000));
+            bound(newstate->getCoordsAt("mild0")[0], Float(3000), Float(10000));
             //bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
-            bound(newstate->getCoordsAt("high0")[0], Float(3000), Float(5000));
+            bound(newstate->getCoordsAt("high0")[0], Float(3000), Float(10000));
             //bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
             
             //if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
@@ -756,7 +777,7 @@ public:
 
         /* discont. vals */
 
-        if (rnd.nextFloat() < 0.6f) { 
+        if (rnd.nextFloat() < 0.8f) { 
             COUT("discon ")
 
             /* how many to sample? */
@@ -764,7 +785,6 @@ public:
             for (size_t i = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i)
                 if (!data.discontinuousValsFixed[i])
                     nNotFixed += 1;
-            nNotFixed = 0;
 
             //int start = 0;
             //int stop = newstate->getCoordsAt("discontinuousVals").size();
@@ -787,17 +807,25 @@ public:
                     continue;
 
                 if (!big4) 
-                    newvals.push_back(newstate->getCoordsAt("discontinuousVals")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.001);
+                    newvals.push_back(newstate->getCoordsAt("discontinuousValsBeta")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.01);
                 else
-                    newvals.push_back(newstate->getCoordsAt("discontinuousVals")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.01);
-                bound(newvals.back(), Float(0), Float(1));
+                    newvals.push_back(newstate->getCoordsAt("discontinuousValsBeta")[i] + stepsizeCorrectionFac*(rnd.nextDouble()-0.5)*0.04);
+                bound(newvals.back(), Float(0), Float(2.5));
             }
             std::sort(newvals.begin(), newvals.end(), std::greater<>());
             for (size_t i = 0, j = 0; i < newstate->getCoordsAt("discontinuousVals").size(); ++i) { 
                 /* jump over fixed ones */
                 if (data.discontinuousValsFixed[i])
                     continue;
-                newstate->getCoordsAt("discontinuousVals")[i] = newvals[j];
+                /* jump over all but on average roughly three (or two when big steps) not to sample too many at once */
+                if (rnd.nextFloat() > ((!big4 ? 4.f : 2.f)/nNotFixed)) {
+                    j++;
+                    continue;
+                }
+                newstate->getCoordsAt("discontinuousValsBeta")[i] = newvals[j];
+                /* only attempt one big change at a time, more is hopeless and usually only one is highly correlated with start time - hope to sometimes hit that one. that we prefer
+                 * the first vals is good!*/
+                //if (big4) break;
                 j++;
             }
 
@@ -870,18 +898,23 @@ public:
         bound(getCoordsAt("delay")[0], Float(20), Float(maxDelayDaysTilData));
         bound(getCoordsAt("missedDeaths")[0], Float(0), Float(100));
 
-        Float lastVal = 1;
-        for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) {
+        //Float lastVal = 1;
+        //for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) {
+            //if (data.discontinuousValsFixed[i])
+                //continue;
+            //bound(getCoordsAt("discontinuousVals")[i], Float(0), lastVal);
+            //lastVal = getCoordsAt("discontinuousVals")[i];
+        //}
+        for (size_t i = 0; i < getCoordsAt("discontinuousValsBeta").size(); ++i) {
             if (data.discontinuousValsFixed[i])
                 continue;
-            bound(getCoordsAt("discontinuousVals")[i], Float(0), lastVal);
-            lastVal = getCoordsAt("discontinuousVals")[i];
+            bound(getCoordsAt("discontinuousValsBeta")[i], Float(0), Float(2.5));
         }
         for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
                 bound(getCoordsAt("behavior")[i], Float(0), Float(2));
         }
-        bound(getCoordsAt("mild0")[0], Float(3000), Float(5000));
-        bound(getCoordsAt("high0")[0], Float(3000), Float(5000));
+        bound(getCoordsAt("mild0")[0], Float(3000), Float(10000));
+        bound(getCoordsAt("high0")[0], Float(3000), Float(10000));
         //bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
         //bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
     }
