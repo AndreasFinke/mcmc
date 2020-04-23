@@ -54,7 +54,6 @@ public:
     Float initialDelay = 14;
     Float initialMissedDeaths = 30;
 
-    bool computeR = false;
 
     int fixBehaviorInAdvance = 14;
 };
@@ -297,15 +296,13 @@ public:
     int nPredictDays, maxDelayDaysTilData;
     int popSize;
     int nDaysTotal;
+    
+    bool computeR = false;
 
     DiseaseSpread(const DiseaseData& data, const DiseaseParams& params, int popSize, double cap0, double capIncrRate, int maxDelayDaysTilData, size_t nPredictDays) : SubspaceState({"behavior", "discontinuousValsBeta", "mild0", "high0", "delay", "missedDeaths", "discontinuousVals", "betaMild", "betaHigh", "mildlyInfectious", "highlyInfectious", "incubating", "asymptomatic", "mild", "serious", "recovered", "dead", "capacity", "totalBehavior", "R"}, false, 14), data(data), params(params), traj(params), nPredictDays(nPredictDays), maxDelayDaysTilData(maxDelayDaysTilData), popSize(popSize) {
  
         //requestedSharedNames = {};
         nDaysTotal = maxDelayDaysTilData + nPredictDays + data.deathsPerDay.size();
-
-        int Rsize = 1;
-        if (data.computeR)
-            Rsize = nDaysTotal;
 
         setCoords( {std::vector(data.deathsPerDay.size()-data.fixBehaviorInAdvance, Float(1)),
                 data.discontinuousVals, 
@@ -322,7 +319,7 @@ public:
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(0)), 
                 std::vector(nDaysTotal, Float(1)),
-                std::vector(Rsize, Float(0))} );
+                std::vector(nDaysTotal, Float(0))} );
 
         proxy = new Float[params.proxyTinfec];
         
@@ -402,6 +399,23 @@ public:
         getCoordsAt("missedDeaths")[0] = ics[7];
     }
 
+    std::vector<Float> getInitialConditions() override {
+        std::vector<Float> ret = {};
+        ret.push_back(getCoordsAt("mild0")[0]);
+        ret.push_back(getCoordsAt("high0")[0]);
+        ret.push_back(getCoordsAt("delay")[0]);
+        for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            /* jump over fixed ones */
+            if (data.discontinuousValsFixed[i])
+                continue;
+            //getCoordsAt("discontinuousVals")[i] = ics[3+j];
+            ret.push_back(getCoordsAt("discontinuousValsBeta")[i]); 
+            j++;
+        }
+        ret.push_back(getCoordsAt("missedDeaths")[0]);
+        return ret;
+    }
+
     void eval(const SharedParams& shared) override {
 
         loglike = 0;
@@ -461,7 +475,7 @@ public:
             getCoordsAt("totalBehavior")[i] = piecewise(i)*piecewise(i)*smooth(i);
         }
 
-        if (data.computeR) 
+        if (computeR)
             getCoordsAt("R").assign(nDaysTotal, Float(0));
 
         int start = maxDelayDaysTilData - getCoordsAt("delay")[0];
@@ -573,7 +587,7 @@ public:
             
             /* compute R at each day - this depends on the future evolution of the susceptible population, so we had to finish the last loop */
 
-            if (data.computeR) {
+            if (computeR) {
                 for (int i = 0; i < nDaysTotal; ++i) {
                     Float R = 0;
                     Float mildcumsum = 0, highcumsum = 0;
@@ -956,7 +970,7 @@ private:
     Float inverseProxy(Float nInfect, Float t) {
 
         double beta_low = 0;
-        double beta_high = 50;
+        double beta_high = 100;
         double beta_mid = (beta_low + beta_high)*0.5;
         double delta = 1;
         if (proxyModel(beta_high, t) < nInfect) {
