@@ -21,6 +21,8 @@ bool verbose = false;
 
 #include <tbb/tbb.h>
 #include <cmath>
+#include <sstream>
+#include <fstream>
 
 template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
@@ -98,6 +100,10 @@ public:
         return {};
     }
 
+    virtual std::vector<Float> getInitialConditions() {
+        return {};
+    }
+
     virtual void setInitialConditions(const std::vector<Float>& ics) {
     }
 
@@ -140,7 +146,7 @@ public:
         return fixed.find(index) != fixed.end();
     }
 
-    auto getNames() const {
+    auto get_names() const {
         return names;
     }
 
@@ -241,6 +247,7 @@ public:
     Float weight = 1;
 
     bool isInitialized = false;
+    bool isEvaluated = false;
 
     int sharedDependencyMaxDepth = 10;
 
@@ -297,14 +304,35 @@ public:
         return initialConditions;
     }
 
+    std::vector< std::vector<Float> > getInitialConditions() {
+        initialConditions.resize(0);
+        for (size_t i = 0; i < state.size(); ++i) {
+            initialConditions.push_back(state[i]->getInitialConditions());
+        }
+        return initialConditions;
+    }
     void setInitialConditions(const std::vector< std::vector<Float> >& ics) {
-        assert(ics.size == state.size());
+        assert(ics.size() == state.size());
         initialConditions = ics;
         for (size_t i = 0; i < state.size(); ++i) {
             state[i]->setInitialConditions(ics[i]);
         }
+        isEvaluated = false;
+        eval();
     }
-    std::map<std::string, std::vector<Float>> getAll() { 
+
+    void set_stepsizes(const std::vector<Float>& sz) {
+        for (size_t i = 0; i < state.size(); ++i) 
+            state[i]->stepsizeCorrectionFac = sz[i];
+    }
+    std::vector<Float> get_stepsizes() {
+        std::vector<Float> ret = {};
+        for (size_t i = 0; i < state.size(); ++i) 
+            ret.push_back(state[i]->stepsizeCorrectionFac);
+        return ret;
+    }
+
+    std::map<std::string, std::vector<Float>> get_all() { 
         std::map<std::string, std::vector<Float>> ret = {};
         for (size_t i = 0; i < state.size(); ++i) { 
             auto r = state[i]->getAll();
@@ -334,6 +362,7 @@ public:
                 update_shared(shared, subspace);
             }
         }
+        isEvaluated = true;
     }
 
     //void init(const std::vector<std::string>& sharedNames, int sharedDependenceMaxDepth = 1) {
@@ -646,7 +675,7 @@ private:
 /* Target is a wrapper around State that adds user-defined weighing. 
  * The standard Markov Chain is going to run on Target, not State, but e.g. simmulated annealing runs on State directly. */
 
-class SimpleTarget {
+class Target {
 
 public:
 
@@ -655,6 +684,11 @@ public:
         try {
             if (!s->isInitialized)
                 s->init();
+            if (!s->isEvaluated) { 
+                s->eval();
+                std::cout << "Target::set_posterior received unevaluated state and forced evaluation.\n";
+            }
+
             state = s; 
             state->weight = weight();
 
@@ -664,6 +698,7 @@ public:
         }  
 
     } 
+
 
     /* Important note for any derived class implementation: if replaceBy given, use this instead of the replaceWhich'st subspace state in state.state vector of pointers to subspacestates */
     virtual Float weight(std::shared_ptr<SubspaceState> replaceBy = nullptr, size_t replaceWhich = 0) const {
@@ -720,19 +755,43 @@ public:
         return true;
     }
 
-    virtual std::shared_ptr<SimpleTarget> deep_copy() {
-        SimpleTarget t(*this);
+    virtual std::shared_ptr<Target> deep_copy() {
+        Target t(*this);
         t.state = state->deep_copy();
-        return std::make_shared<SimpleTarget>(t);
+        return std::make_shared<Target>(t);
     }
 
-    virtual ~SimpleTarget() {} 
+    virtual ~Target() {} 
 
     std::shared_ptr<State> state = nullptr;
 
 };
 
-class CoolingTarget : public SimpleTarget {
+class TempTarget : public Target {
+
+public:
+
+    TempTarget(Float T = 1) : bet(1/T) {} 
+
+
+    Float bet; 
+
+    Float beta(Float time) override { 
+        return bet;
+    }
+
+
+    std::shared_ptr<Target> deep_copy() override {
+        TempTarget t(*this);
+        t.state = state->deep_copy();
+        return std::make_shared<TempTarget>(t);
+    }
+
+    virtual ~TempTarget() {} 
+
+};
+
+class CoolingTarget : public Target {
 
 public:
 
@@ -744,7 +803,7 @@ public:
         return std::exp(time*slope)/Tinit;
     }
     
-    std::shared_ptr<SimpleTarget> deep_copy() override {
+    std::shared_ptr<Target> deep_copy() override {
         CoolingTarget t(*this);
         t.state = state->deep_copy();
         return std::make_shared<CoolingTarget>(t);
@@ -754,7 +813,7 @@ public:
 
 };
 
-class AdvCoolingTarget : public SimpleTarget {
+class AdvCoolingTarget : public Target {
 
     std::vector<Float> energies;
     Float energy_old, relaxationTime; 
@@ -832,7 +891,7 @@ public:
 
     bool step(pcg32& rnd, ProposalRecord& rec, Float time, bool isSubspaceRandom, int& nAccept) override {
 
-        bool ret = SimpleTarget::step(rnd, rec, time, isSubspaceRandom, nAccept);
+        bool ret = Target::step(rnd, rec, time, isSubspaceRandom, nAccept);
 
         /* only consider accepted states, as samples from the equilibrium or non-equilibrium */ 
         if (nAccept == 1) { 
@@ -850,14 +909,14 @@ public:
 
                     std::cout << "heatcap " << heatCapacity << "\n";
                     if (heatCapacity < 0) { 
-                        std::cout << "Negative heat capacity due to nonconverged estimation. Continuing... \n"; 
+                        //std::cout << "Negative heat capacity due to nonconverged estimation. Continuing... \n"; 
                         if (defaultHeatCapacity > 0) 
                             heatCapacity = defaultHeatCapacity;
                     }
 
                     DeltaT = sgn(heatCapacity)*slope*T/(relaxationTime*std::sqrt(std::abs(heatCapacity)));
 
-                    std::cout << "deltaT = " << DeltaT << ", this is " << DeltaT/T << " frac of T.\n";
+                    std::cout << "T = " << T << ", deltaT = " << DeltaT << ", (" << DeltaT/T*100 << "percent)\n";
 
                 }
 
@@ -874,7 +933,7 @@ public:
         return ret; 
     }
 
-    std::shared_ptr<SimpleTarget> deep_copy() override {
+    std::shared_ptr<Target> deep_copy() override {
         AdvCoolingTarget t(*this);
         t.state = state->deep_copy();
         return std::make_shared<AdvCoolingTarget>(t);
@@ -891,17 +950,26 @@ public:
                     //for (int chain = 0; chain < nChains; ++chain) {
                         std::cout << "Chain " << chain << " started.\n"; 
                     */
+
+template <class T>
+class ChainManager;
+
 class MetropolisChain {
+
+    friend class ChainManager<MetropolisChain>;
 
 public:
 
     bool computeMean = false;
     bool recordSamples = true;
+    bool writeSamplesToDisk = false;
     int id; 
     pcg32 rnd;
-    std::shared_ptr<SimpleTarget> target;
+    std::shared_ptr<Target> target;
 
-    MetropolisChain(std::shared_ptr<SimpleTarget> targetArg, int chainid) : id(chainid), rnd(0, chainid), target(std::move(targetArg)) {
+    Float weight;
+
+    MetropolisChain(std::shared_ptr<Target> targetArg, int chainid) : id(chainid), rnd(0, chainid), target(targetArg), weight(1) {
         if (verbose)
             std::cout << "Constructing chain\n";
         mean = target->state->deep_copy();
@@ -915,7 +983,16 @@ public:
         int adjustbar = 0;
         int progressbar = 0;
 
+        std::ofstream file;
+        if (writeSamplesToDisk) { 
+            std::stringstream filename; 
+            filename << "samples" << id << ".txt";
+            file.open(filename.str());
+            file << "chainweight " << weight << "\n\n";
+        }
+
         START_NAMED_TIMER("Adjustment");
+
         for (int i = 0; i < nSamples+nAdjust; ++i)  {
 
             ProposalRecord rec; 
@@ -974,11 +1051,30 @@ public:
                     ++progressbar;
                 }
                 
-                target->step(rnd, rec, Float(i)/nAdjust, true, nAccept);
+                target->step(rnd, rec, Float(i-nAdjust)/nSamples, true, nAccept);
             }
 
             if ((i > nBurnin) && (i % thinning) == 0) {
-                loglikes.push_back(target->state->loglikelihood());
+                if (i < nAdjust) 
+                    loglikes.push_back(target->logprobability(Float(i)/nAdjust));
+                else
+                    loglikes.push_back(target->logprobability(Float(i-nAdjust)/nSamples));
+
+                ics.push_back(target->state->getInitialConditions());
+
+                if (writeSamplesToDisk) { 
+                    auto data = target->state->get_all();
+
+                    file << "weight " << 1/target->state->weight << "\n";
+                    for (auto& [name, vec] : data) {
+                        file << name << " ";
+
+                        for (Float x : vec)
+                            file << x << " ";
+                        file << "\n";
+                    }
+                    file << "\n";
+                }
                 if (recordSamples)
                     samples.push_back(std::make_shared<State>(*(target->state))); 
             }
@@ -986,22 +1082,22 @@ public:
             if ((i > nBurnin) && computeMean)
                 mean->addCoordsOf(target->state);
 
-            if (!recordSamples) { /* noticed slowdown almost 2x when *not* saving samples. This seems to 
-                                     be due to many immediate deletes of subspace states when share_ptrs go 
-                                     out of scope. Avoid this by collecting some and deleting them at once. 
-                                     On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
-                                     that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
-                static std::vector<std::shared_ptr<State>> garbage;
-                const int nGarbage = 50;
-                static int curr = 0;
-                if (curr < nGarbage) 
-                    garbage.push_back(std::make_shared<State>(*(target->state)));
-                else if (curr == nGarbage) {
-                    curr = -1;
-                    garbage = {};
-                }
-                curr++;
-            }
+            //if (!recordSamples) { [> noticed slowdown almost 2x when *not* saving samples. This seems to 
+                                     //be due to many immediate deletes of subspace states when share_ptrs go 
+                                     //out of scope. Avoid this by collecting some and deleting them at once. 
+                                     //On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
+                                     //that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
+                //static std::vector<std::shared_ptr<State>> garbage;
+                //const int nGarbage = 50;
+                //static int curr = 0;
+                //if (curr < nGarbage) 
+                    //garbage.push_back(std::make_shared<State>(*(target->state)));
+                //else if (curr == nGarbage) {
+                    //curr = -1;
+                    //garbage = {};
+                //}
+                //curr++;
+            //}
 
         }
         STOP_TIMER;
@@ -1013,11 +1109,69 @@ public:
 
     }
 
-    //void cool();
 
+    void reevaluate(std::shared_ptr<State> evalstate, int nBurnin) {
+
+        if (!recordSamples && !writeSamplesToDisk) {
+            std::cout << "Re-evaluation of chain " << id << " is not requested to record samples in chain nor write them to disk. Aborting.\n";
+            return;
+        }
+        if (ics.size() == 0) { 
+            std::cout << "Re-evaluation of chain " << id << " impossible: No initial conditions have been recorded.\n";
+            return;
+        }
+        if (samples.size() > 0) {
+            std::cout << "Re-evaluation of chain " << id << " despite saved samples. Overwriting... \n";
+            samples = {};
+        }
+        if (nBurnin >= ics.size()) { 
+            std::cout << "Requested re-evaluation with burnin as big as original run or bigger. Aborting.\n";
+            return;
+        }
+       
+        std::vector<decltype(ics)::value_type>(ics.begin()+nBurnin, ics.end()).swap(ics);
+        std::vector<decltype(loglikes)::value_type>(loglikes.begin()+nBurnin, loglikes.end()).swap(loglikes);
+
+        if (writeSamplesToDisk) {
+            std::stringstream filename; 
+            filename << "samples" << id << ".txt";
+            std::ofstream file(filename.str());
+            file << "chainweight = " << weight << "\n\n";
+            for (size_t i = 0; i < ics.size(); ++i) {
+
+                evalstate->setInitialConditions(ics[i]);
+                target->set_posterior(evalstate);
+
+                file << "weight " << 1/target->state->weight << "\n";
+
+                auto data = target->state->get_all();
+
+                for (auto& [name, vec] : data) {
+                    file << name << " ";
+
+                    for (Float x : vec)
+                        file << x << " ";
+                    file << "\n";
+                }
+                file << "\n";
+
+                if (recordSamples) /* here we cannot rely on copies being made of the changed subspacestates due to chain stepping - need to copy right here */
+                    samples.push_back(target->state->deep_copy()); 
+            }
+        }
+        else {  /* recordSamples is true if writeSamplesToDisk is false, because of previous test*/ 
+            for (size_t i = 0; i < ics.size(); ++i) {
+                evalstate->setInitialConditions(ics[i]);
+                target->set_posterior(evalstate);
+
+                /* here we cannot rely on copies being made of the changed subspacestates due to chain stepping - need to copy right here */
+                samples.push_back(target->state->deep_copy()); 
+            }
+        }
+    }
 #if PY == 1
 
-    py::array_t<Float> getMean(const std::string& coordName) {
+    py::array_t<Float> get_mean(const std::string& coordName) {
 
         if (!computeMean)
             std::cout << "Requested mean, but MetropolisChain::computeMean is false\n";
@@ -1030,7 +1184,7 @@ public:
 
         return ret;
     }
-    py::array_t<Float> getSamples(const std::string& coordName) {
+    py::array_t<Float> get_samples(const std::string& coordName) {
 
         if (samples.size() == 0) { 
             std::cout << "Requested samples, but none are present\n";
@@ -1052,7 +1206,7 @@ public:
         return ret;
     }
 
-    py::array_t<Float> getWeights() {
+    py::array_t<Float> get_weights() {
 
         if (samples.size() == 0) { 
             std::cout << "Requested weights, but none are present\n";
@@ -1069,7 +1223,7 @@ public:
         return ret;
     }
     
-    py::array_t<Float> getLoglikes() {
+    py::array_t<Float> get_loglikes() {
 
         if (loglikes.size() == 0) { 
             std::cout << "Requested loglikes, but none are present\n";
@@ -1092,6 +1246,7 @@ protected:
 
     std::vector< std::shared_ptr<State> > samples;
     std::vector<Float> loglikes;
+    std::vector< std::vector< std::vector<Float> > > ics;
     std::shared_ptr<State> mean;
 
 };
@@ -1099,17 +1254,14 @@ protected:
 template<class ChainType> 
 class ChainManager  { 
 public:
-    ChainManager(std::shared_ptr<SimpleTarget> target, size_t nChainReservoir, size_t nChain) : target(target), nChainReservoir(nChainReservoir), nChain(nChain)  {
+    ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}  {
 
         pcg32 rnd(0, 0);
-
         /*ICs, probability */
         std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
-        /*the corresponding discrete CDF as a float array*/
-        std::vector<double> discreteCDF;
-        double total = 0.0;
 
-        std::cout << "Constructing a discrete distribution of " << nChainReservoir << " random states. " << std::endl; 
+        std::cout << "\nConstructing a discrete distribution of " << nChainReservoir << " random inital states. " << std::endl; 
+        
         while (trialChainICs.size() < nChainReservoir) {
 
             /* sample some new ICs and evaluate posterior */
@@ -1121,16 +1273,152 @@ public:
 
             if ( !std::isnan(prob) && !std::isinf(prob) ) {
                 trialChainICs.push_back(std::make_pair(target->state->initialConditions, prob)); 
-            std::cout << target->state->loglikelihood() << " " << prob << "\n";
+            //std::cout << target->state->loglikelihood() << " " << prob << "\n";
 
             }
+
+        }
+        stepsizes = std::vector<Float>(target->state->state.size(), Float(1));
+        bootstrap(rnd, trialChainICs);
+    }
+
+    ChainManager(std::shared_ptr<ChainType> generator, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}  { 
+
+            pcg32 rnd(0, 0);
+            std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+            //auto generatorTarget = std::make_shared<TempTarget>(generatorTemp);
+            //generatorTarget->set_posterior(target->state);
+            //generator = std::make_shared<ChainType>(generatorTarget, 0);
+            //generator->recordSamples = false;
+            //std::cout << "Creating these from " << nChainReservoir*generatorSkip + nGeneratorBurnin << " samples of a generator chain at temperature " << generatorTemp << ". 
+            //generator->run(nChainReservoir*generatorSkip, nGeneratorBurnin, nGeneratorBurnin, generatorSkip);
+
+
+            std::cout << "A" << generator->loglikes.size() <<  " " << generator->samples.size() << std::endl;
+            for (size_t i = 0; i < generator->loglikes.size(); ++i) {
+                Float oldlogprob = generator->loglikes[i];
+                /* if samples have not been saved fully, re-evaluate original loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                 * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+                 * we should re-evaluate */
+               
+                if (generator->recordSamples) {
+                    target->set_posterior(generator->samples[i]);
+                }
+                else  { 
+                    /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                     * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+                     * we should re-evaluate */
+                    target->state->setInitialConditions(generator->ics[i]);
+                    //target->state->eval(); //already done in other functions. 
+                    /* this is assigning target's state to itself, but also computing the new weight! */
+                    target->set_posterior(target->state);
+                }
+
+                Float newlogprob = target->logprobability(0); 
+                trialChainICs.push_back(std::make_pair(generator->ics[i], newlogprob - oldlogprob));
+            }
+            std::cout << "H" << std::endl;
+
+            stepsizes = generator->target->state->get_stepsizes();
+            std::cout << "before bootstrap" << std::endl;
+            bootstrap(rnd, trialChainICs);
+    }
+
+
+    std::vector<Float> stepsizes;
+
+    void run_chains(size_t nSteps, size_t thinning, Float stepsizefac) {
+
+        for (auto& s : stepsizes) 
+                s *= stepsizefac;
+
+        chains = {};
+
+        for (size_t i = 0; i < chainICs.size(); ++i) {
+
+            /* we want separate targets (and states) for parallel chains */
+            std::shared_ptr<Target> tar = target->deep_copy();
+
+            /* calls State::eval() */
+            tar->state->setInitialConditions(chainICs[i].first);
+            tar->state->set_stepsizes(stepsizes);
+
+            tar->set_posterior(tar->state);
+            
+            chains.push_back(ChainType(tar, i+1));
+
+            std::cout << "Initialized chain " << i << " with true loglikelihood = " << tar->state->loglikelihood() << "\n";
+            chains[i].recordSamples = false;
+            chains[i].weight = chainICs[i].second;
         }
 
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
+                [&](tbb::blocked_range<size_t> range) {
+                
+
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+                //for (size_t i = 0; i < chains.size(); ++i) {
+                    std::cout << "Started chain " << i << "." << std::endl; 
+
+
+                    chains[i].run(nSteps, 0, 0, thinning);
+
+                }
+            }
+        );
+
+        std::cout << "Chain runs completed." << std::endl << std::endl;
+
+    }
+
+    ChainType& get_chain(size_t i) {
+        if (chains.size() == 0) {   
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but no valid chain is present. call ChainManager::run_chains first!";
+            throw;
+        }
+        if (chains.size() <= i) {   
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but only up to " << chains.size() << " chains are present. Valid indices up to " <<chains.size() -1 << " only!";
+            throw;
+        }
+        return chains[i];
+    }
+
+    void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk) {
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
+                [&](tbb::blocked_range<size_t> range) {
+                
+
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+                //for (size_t i = 0; i < chains.size(); ++i) {
+                    std::cout << "Reevaluating chain with id = " << i << "." << std::endl; 
+         
+                    chains[i].recordSamples = recordSamples;
+                    chains[i].writeSamplesToDisk = writeSamplesToDisk;
+                    chains[i].reevaluate(state->deep_copy(), nBurnin);
+                    
+
+                }
+            }
+        );
+        //
+        std::cout << "Reevaluation completed." << std::endl << std::endl;
+
+    }
+protected:
+
+    void bootstrap(pcg32& rnd, std::vector< std::pair<std::vector<std::vector<Float>>, Float> >& trialChainICs) { 
+        /*the corresponding discrete CDF as a float array*/
+        std::vector<double> discreteCDF;
+        double total = 0.0;
         /* normalize all probabilities by the same factor, bt shifting log prob such that the best sits at zero. this is to avoid all of the exponentials being rounded to zero for loglikelihoods that may be of the order of -1e7... */
         double maxsofar = -1e20;
         for (size_t i = 0; i < trialChainICs.size(); ++i)
             if (trialChainICs[i].second > maxsofar)
                 maxsofar = trialChainICs[i].second;
+
+        std::cout << "Highest likelihood in set: " << maxsofar << "\n";
 
         for (size_t i = 0; i < trialChainICs.size(); ++i)  { 
             trialChainICs[i].second = std::exp(trialChainICs[i].second - maxsofar);
@@ -1139,7 +1427,7 @@ public:
 
         std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
         discreteCDF.push_back(trialChainICs[0].second);
-        for (size_t i = 1; i < nChainReservoir; ++i) 
+        for (size_t i = 1; i < trialChainICs.size(); ++i) 
             discreteCDF.push_back(discreteCDF[i-1] + trialChainICs[i].second);
         discreteCDF.back() = 1.000001*total; //fight rounding errors: has to be larger than largest random number for what comes now 
 
@@ -1149,6 +1437,8 @@ public:
             double x = rnd.nextDouble()*total;
             auto iter = std::upper_bound(discreteCDF.begin(), discreteCDF.end(), x);
             size_t idx = iter - discreteCDF.begin();
+
+            std::cout << "Relative loglikelihood of chain drawn is " << std::log(trialChainICs[idx].second) << "\n";
             /* is it the first time these ICs are sampled? */
             if (old2new.find(idx) == old2new.end()) {
                 /* no need to remember the probability of the initial state */
@@ -1157,68 +1447,22 @@ public:
                 old2new[idx] = chainICs.size()-1;  
             }
             else {
-                std::cout << "Note: same chain " << old2new[idx] << " that has been picked " << chainICs[old2new[idx]].second << " times was picked again." << std::endl;
-                --i;
+                std::cout << "Note: same chain " << old2new[idx] << " that has been picked " << chainICs[old2new[idx]].second << " times was picked again. New chain weight: " << chainICs[old2new[idx]].second + 1 << std::endl;
                 chainICs[old2new[idx]].second += 1;
+                --i;
             }
 
         }
 
         std::cout << "Selection completed." << std::endl << std::endl; 
     }
-
-    void runChains(size_t nSteps, size_t thinning) {
-
-        tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
-                [&](tbb::blocked_range<size_t> range) {
-                
-                //SamplefX samples; 
-                //set_slices(samples, ChainType::nSamples);
-
-                for (size_t i = range.begin(); i < range.end(); ++i) {
-         //       for (size_t i = 0; i < chains.size(); ++i) {
-                    std::cout << "Started chain " << i << "." << std::endl; 
-          
-
-                    std::shared_ptr<SimpleTarget> tar = target->deep_copy();
-                    tar->state->setInitialConditions(chainICs[i].first);
-
-                    ChainType chain(tar, i);
-                    Float weight = chainICs[i].second;
-
-                    chain.run(nSteps, 0, 0, thinning);
-
-                }
-
-
-            }
-        ); 
-        //size_t nAccept = 0;
-        //for (size_t i = 0; i < chains.size(); ++i) {
-            //nAccept += chains[i]->nAccept;
-        //}
-
-        //std::cout << "Acceptance rate = " << float(nAccept)/(nSteps*nChain) << std::endl; 
-        std::cout << "Chain runs completed." << std::endl << std::endl;
-        //std::cout << "Accumulating results from the chains. " << std::endl;
-
-        //for (auto& c : chains)
-            //for (auto m : c->measurements)
-                //m->accumulate(nChain); 
-
-
-        //std::cout << "Postprocessing accumulated measurement results. " << std::endl;
-        //for (auto m : chains[0]->measurements)
-            //m->postprocess(nChain); 
-
-    }
-protected:
     std::vector< std::pair<std::vector<std::vector<Float>>, int>> chainICs;
-    size_t nChainReservoir = 1;
+    std::vector<ChainType> chains = {};
     size_t nChain = 1;
-    std::shared_ptr<SimpleTarget> target;
+    std::shared_ptr<Target> target;
 };
+
+
 class GradientDecent {
 
 public:

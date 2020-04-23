@@ -27,7 +27,7 @@ namespace py = pybind11;
 int main() {
 
     pcg32 rng;
-    auto t = std::make_shared<SimpleTarget>();
+    auto t = std::make_shared<Target>();
 
     auto s = std::make_shared<MyState>();
 
@@ -45,7 +45,7 @@ int main() {
 
 PYBIND11_MODULE(mcmc, m) {
     py::class_<SubspaceState, std::shared_ptr<SubspaceState>>(m, "SubspaceState")
-        .def("getNames", &SubspaceState::getNames);
+        .def("get_names", &SubspaceState::get_names);
         //.def(py::init<std::map<std::string, int>>());
     py::class_<DiseaseData>(m, "DiseaseData")
         .def(py::init<const py::array_t<Float>, const py::array_t<Float>>())
@@ -53,7 +53,6 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("initialHigh0", &DiseaseData::initialHigh0)
         .def_readwrite("initialDelay", &DiseaseData::initialDelay)
         .def_readwrite("initialMissedDeaths", &DiseaseData::initialMissedDeaths)
-        .def_readwrite("computeR", &DiseaseData::computeR)
         .def_readwrite("fixBehaviorInAdvance", &DiseaseData::fixBehaviorInAdvance);
     py::class_<DiseaseParams>(m, "DiseaseParams")
         .def(py::init<>())
@@ -93,6 +92,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("dead", &AvgDiseaseTrajectory::dead)
         .def_readwrite("recovered", &AvgDiseaseTrajectory::recovered);
     py::class_<DiseaseSpread, SubspaceState, std::shared_ptr<DiseaseSpread>>(m, "DiseaseSpread")
+        .def_readwrite("computeR", &DiseaseSpread::computeR)
         .def(py::init<const DiseaseData&, const DiseaseParams&, int, double, double, int, size_t>());
 
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
@@ -104,6 +104,9 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<D, SubspaceState, std::shared_ptr<D>>(m, "D")
         .def(py::init<>());
 
+    py::class_<FourGaussians, SubspaceState, std::shared_ptr<FourGaussians>>(m, "FourGaussians")
+        .def(py::init<Float>());
+
     py::class_<SmoothnessPrior, SubspaceState, std::shared_ptr<SmoothnessPrior>>(m, "SmoothnessPrior")
         .def(py::init<const std::string&, Float, Float>());
     py::class_<State, std::shared_ptr<State>>(m, "State")
@@ -112,18 +115,20 @@ PYBIND11_MODULE(mcmc, m) {
         .def("init", &State::init)
         .def("loglike", &State::loglikelihood)
         .def("force_bounds", &State::force_bounds)
-        .def("getAll", &State::getAll)
+        .def("get_all", &State::get_all)
         .def_readwrite("sharedDependencyMaxDepth", &State::sharedDependencyMaxDepth);
     py::class_<MyState, State, std::shared_ptr<MyState>>(m, "MyState")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<>());
-    py::class_<SimpleTarget, std::shared_ptr<SimpleTarget>>(m, "SimpleTarget")
+    py::class_<Target, std::shared_ptr<Target>>(m, "Target")
         .def(py::init<>())
-        .def("set_posterior", &SimpleTarget::set_posterior);
-    py::class_<CoolingTarget, SimpleTarget, std::shared_ptr<CoolingTarget>>(m, "CoolingTarget")
+        .def("set_posterior", &Target::set_posterior);
+    py::class_<TempTarget, Target, std::shared_ptr<TempTarget>>(m, "TempTarget")
+        .def(py::init<Float>());
+    py::class_<CoolingTarget, Target, std::shared_ptr<CoolingTarget>>(m, "CoolingTarget")
         .def(py::init<Float, Float>());
         //.def("add_state", &Target::add_state);
-    py::class_<AdvCoolingTarget, SimpleTarget, std::shared_ptr<AdvCoolingTarget>>(m, "AdvCoolingTarget")
+    py::class_<AdvCoolingTarget, Target, std::shared_ptr<AdvCoolingTarget>>(m, "AdvCoolingTarget")
         .def(py::init<Float, Float>())
         .def_readwrite("maxPeriodLength", &AdvCoolingTarget::maxPeriodLength)
         .def_readwrite("minOscillations", &AdvCoolingTarget::minOscillations)
@@ -134,19 +139,25 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, int>());
     py::class_<GaussianMixturePDF, SubspaceState, std::shared_ptr<GaussianMixturePDF>>(m, "GaussianMixturePDF")
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, size_t>());
-    py::class_<MetropolisChain>(m, "Chain")
+    py::class_<MetropolisChain, std::shared_ptr<MetropolisChain>>(m, "Chain")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
-        .def(py::init<std::shared_ptr<SimpleTarget>, int>())
+        .def(py::init<std::shared_ptr<Target>, int>())
         .def("run", &MetropolisChain::run)
-        .def("getMean", &MetropolisChain::getMean)
-        .def("getSamples", &MetropolisChain::getSamples)
-        .def("getWeights", &MetropolisChain::getWeights)
-        .def("getLoglikes", &MetropolisChain::getLoglikes)
+        .def("get_mean", &MetropolisChain::get_mean)
+        .def("get_samples", &MetropolisChain::get_samples)
+        .def("get_weights", &MetropolisChain::get_weights)
+        .def("get_loglikes", &MetropolisChain::get_loglikes)
+        .def("reevaluate", &MetropolisChain::reevaluate)
+        .def_readwrite("weight", &MetropolisChain::weight)
         .def_readwrite("computeMean", &MetropolisChain::computeMean)
-        .def_readwrite("recordSamples", &MetropolisChain::recordSamples);
+        .def_readwrite("recordSamples", &MetropolisChain::recordSamples)
+        .def_readwrite("writeSamplesToDisk", &MetropolisChain::writeSamplesToDisk);
     py::class_<ChainManager<MetropolisChain>>(m, "ChainManager")
-        .def(py::init<std::shared_ptr<SimpleTarget>, size_t, size_t>())
-        .def("runChains", &ChainManager<MetropolisChain>::runChains);
+        .def(py::init<std::shared_ptr<Target>, size_t, size_t>())
+        .def(py::init<std::shared_ptr<MetropolisChain>, std::shared_ptr<Target>, size_t>())
+        .def("run_chains", &ChainManager<MetropolisChain>::run_chains)
+        .def("reevaluate_all", &ChainManager<MetropolisChain>::reevaluate_all)
+        .def("get_chain", &ChainManager<MetropolisChain>::get_chain);
     py::class_<GradientDecent>(m, "GradientDecent")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<State>, Float>())

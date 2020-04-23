@@ -66,6 +66,74 @@ private:
 
 };
 
+class FourGaussians : public SubspaceState {
+
+public:
+
+    FourGaussians(Float difficulty) : difficulty(difficulty), SubspaceState({"pos"}, 1, false) {
+
+        setCoords( {{0,0}} );
+
+    }
+
+    ~FourGaussians() {} 
+
+    Float difficulty = 1;
+
+    void eval(const SharedParams& shared) override {
+
+        loglike = 0;
+
+        Float x = getCoordsAt("pos")[0];
+        Float y = getCoordsAt("pos")[1];
+
+        loglike  = std::exp( - difficulty*((x+0.5)*(x+0.5)/(2*0.5*0.5) + (y+1)*(y+1)/(2*0.2*0.2)));
+        loglike += std::exp( - difficulty*((x-1)*(x-1)/(2*0.2*0.2) + (y-0.5)*(y-0.5)/(2*0.5*0.5)));
+        loglike += std::exp( - difficulty*((x+y)*(x+y)/(2*1) + (x-y - 2)*(x-y - 2)/(2*0.2*0.2)));
+        loglike += std::exp( - difficulty*((x+y)*(x+y)/(2*1) + (x-y + 2)*(x-y + 2)/(2*0.1)));
+
+        loglike = std::log(loglike);
+
+    }
+
+    //Proposal step_impl(pcg32& rnd, const SharedParams& shared) const override {
+    Proposal step(pcg32& rnd, const SharedParams& shared) const override {
+
+        auto newstate = copy();
+
+        for (auto& p : newstate->getCoords()[names.at("pos")]) { 
+            p += stepsizeCorrectionFac*(rnd.nextFloat()-0.5);
+            bound(p, Float(-5), Float(5));
+        }
+        
+        newstate->eval(shared);
+        return Proposal{newstate, 1};
+
+    }
+
+    HAS_STEP
+
+    std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
+        std::vector<Float> ret = {};
+        ret.push_back(-5 + 10*rnd.nextDouble());
+        ret.push_back(-5 + 10*rnd.nextDouble());
+
+        setInitialConditions(ret);
+        return ret;
+    }
+
+    void setInitialConditions(const std::vector<Float>& ics) override {
+        getCoordsAt("pos")[0] = ics[0];
+        getCoordsAt("pos")[1] = ics[1];
+    }
+
+    std::vector<Float> getInitialConditions() override {
+        std::vector<Float> ret = {};
+        ret.push_back(getCoordsAt("pos")[0]);
+        ret.push_back(getCoordsAt("pos")[1]);
+        return ret;
+    }
+};
 /* this mock likelihood only samples x and y, but is a standard gaussian in 4d in x,y,z and w.
  * To test working with shared parameters that are stepped elsewhere, z is part of likelihood C.
  * To test dependency on derived parameters of other likelihoods, w^2 is derived in a gaussian likelihood D for w 
