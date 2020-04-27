@@ -321,8 +321,9 @@ public:
                 std::vector(nDaysTotal, Float(1)),
                 std::vector(nDaysTotal, Float(0))} );
 
-        proxy = new Float[params.proxyTinfec];
-        
+        //proxy = new Float[params.proxyTinfec];
+        proxy.resize(params.proxyTinfec);
+
         getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
         getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
 
@@ -388,7 +389,8 @@ public:
         getCoordsAt("mild0")[0] = ics[0];
         getCoordsAt("high0")[0] = ics[1];
         getCoordsAt("delay")[0] = ics[2];
-        for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+        size_t j = 0;
+        for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
             /* jump over fixed ones */
             if (data.discontinuousValsFixed[i])
                 continue;
@@ -396,7 +398,10 @@ public:
             getCoordsAt("discontinuousValsBeta")[i] = ics[3+j];
             j++;
         }
-        getCoordsAt("missedDeaths")[0] = ics[7];
+        getCoordsAt("missedDeaths")[0] = ics[3+j];
+        for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) { 
+            getCoordsAt("behavior")[i] = ics[4+j+i];
+        }
     }
 
     std::vector<Float> getInitialConditions() override {
@@ -413,6 +418,9 @@ public:
             j++;
         }
         ret.push_back(getCoordsAt("missedDeaths")[0]);
+        for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) { 
+            ret.push_back(getCoordsAt("behavior")[i]);
+        }
         return ret;
     }
 
@@ -970,7 +978,7 @@ private:
     Float inverseProxy(Float nInfect, Float t) {
 
         double beta_low = 0;
-        double beta_high = 100;
+        double beta_high = 50;
         double beta_mid = (beta_low + beta_high)*0.5;
         double delta = 1;
         if (proxyModel(beta_high, t) < nInfect) {
@@ -992,7 +1000,8 @@ private:
 
     }
 
-    Float * proxy;
+    std::vector<Float> proxy;
+
     std::vector<Float> mildlyInfectiousBuf[2];
     std::vector<Float> highlyInfectiousBuf[2];
     std::vector<Float> incubatingBuf[2];
