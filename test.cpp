@@ -113,9 +113,12 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<>())
         .def("add", &State::add)
         .def("init", &State::init)
+        .def("eval", &State::eval)
         .def("loglike", &State::loglikelihood)
         .def("force_bounds", &State::force_bounds)
         .def("get_all", &State::get_all)
+        .def("getInitialConditions", &State::getInitialConditions)
+        .def("setInitialConditions", &State::setInitialConditions)
         .def_readwrite("sharedDependencyMaxDepth", &State::sharedDependencyMaxDepth);
     py::class_<MyState, State, std::shared_ptr<MyState>>(m, "MyState")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
@@ -155,9 +158,11 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<ChainManager<MetropolisChain>>(m, "ChainManager")
         .def(py::init<std::shared_ptr<Target>, size_t, size_t>())
         .def(py::init<std::shared_ptr<MetropolisChain>, std::shared_ptr<Target>, size_t>())
-        .def("run_chains", &ChainManager<MetropolisChain>::run_chains)
+        .def(py::init<std::vector<MetropolisChain>, std::shared_ptr<Target>, size_t>())
+        .def("run_all", &ChainManager<MetropolisChain>::run_all)
         .def("reevaluate_all", &ChainManager<MetropolisChain>::reevaluate_all)
-        .def("get_chain", &ChainManager<MetropolisChain>::get_chain);
+        .def("get_chain", &ChainManager<MetropolisChain>::get_chain)
+        .def("get_all_chains", &ChainManager<MetropolisChain>::get_all_chains);
     py::class_<GradientDecent>(m, "GradientDecent")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<State>, Float>())

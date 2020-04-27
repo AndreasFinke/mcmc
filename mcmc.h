@@ -1007,6 +1007,50 @@ public:
                 START_NAMED_TIMER("Sampling");
             }
 
+            if ((i >= nBurnin) && (i % thinning) == 0) {
+                if (i < nAdjust) 
+                    loglikes.push_back(target->logprobability(Float(i)/nAdjust));
+                else
+                    loglikes.push_back(target->logprobability(Float(i-nAdjust)/nSamples));
+
+                ics.push_back(target->state->getInitialConditions());
+
+                if (writeSamplesToDisk) { 
+                    auto data = target->state->get_all();
+
+                    file << "weight " << 1/target->state->weight << "\n";
+                    for (auto& [name, vec] : data) {
+                        file << name << " ";
+
+                        for (Float x : vec)
+                            file << x << " ";
+                        file << "\n";
+                    }
+                    file << "\n";
+                }
+                if (recordSamples)
+                    samples.push_back(std::make_shared<State>(*(target->state))); 
+            }
+
+            if ((i > nBurnin) && computeMean)
+                mean->addCoordsOf(target->state);
+
+            //if (!recordSamples) { [> noticed slowdown almost 2x when *not* saving samples. This seems to 
+                                     //be due to many immediate deletes of subspace states when share_ptrs go 
+                                     //out of scope. Avoid this by collecting some and deleting them at once. 
+                                     //On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
+                                     //that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
+                //static std::vector<std::shared_ptr<State>> garbage;
+                //const int nGarbage = 50;
+                //static int curr = 0;
+                //if (curr < nGarbage) 
+                    //garbage.push_back(std::make_shared<State>(*(target->state)));
+                //else if (curr == nGarbage) {
+                    //curr = -1;
+                    //garbage = {};
+                //}
+                //curr++;
+            //}
             if (i < nAdjust) {
 
                 if (adjustbar < int(nBar*Float(i)/nAdjust)) { 
@@ -1054,50 +1098,6 @@ public:
                 target->step(rnd, rec, Float(i-nAdjust)/nSamples, true, nAccept);
             }
 
-            if ((i > nBurnin) && (i % thinning) == 0) {
-                if (i < nAdjust) 
-                    loglikes.push_back(target->logprobability(Float(i)/nAdjust));
-                else
-                    loglikes.push_back(target->logprobability(Float(i-nAdjust)/nSamples));
-
-                ics.push_back(target->state->getInitialConditions());
-
-                if (writeSamplesToDisk) { 
-                    auto data = target->state->get_all();
-
-                    file << "weight " << 1/target->state->weight << "\n";
-                    for (auto& [name, vec] : data) {
-                        file << name << " ";
-
-                        for (Float x : vec)
-                            file << x << " ";
-                        file << "\n";
-                    }
-                    file << "\n";
-                }
-                if (recordSamples)
-                    samples.push_back(std::make_shared<State>(*(target->state))); 
-            }
-
-            if ((i > nBurnin) && computeMean)
-                mean->addCoordsOf(target->state);
-
-            //if (!recordSamples) { [> noticed slowdown almost 2x when *not* saving samples. This seems to 
-                                     //be due to many immediate deletes of subspace states when share_ptrs go 
-                                     //out of scope. Avoid this by collecting some and deleting them at once. 
-                                     //On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
-                                     //that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
-                //static std::vector<std::shared_ptr<State>> garbage;
-                //const int nGarbage = 50;
-                //static int curr = 0;
-                //if (curr < nGarbage) 
-                    //garbage.push_back(std::make_shared<State>(*(target->state)));
-                //else if (curr == nGarbage) {
-                    //curr = -1;
-                    //garbage = {};
-                //}
-                //curr++;
-            //}
 
         }
         STOP_TIMER;
@@ -1254,7 +1254,7 @@ protected:
 template<class ChainType> 
 class ChainManager  { 
 public:
-    ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}  {
+    ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
 
         pcg32 rnd(0, 0);
         /*ICs, probability */
@@ -1282,52 +1282,99 @@ public:
         bootstrap(rnd, trialChainICs);
     }
 
-    ChainManager(std::shared_ptr<ChainType> generator, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}  { 
+    ChainManager(std::shared_ptr<ChainType> generator, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}, chains{}, chainICs{}  { 
 
-            pcg32 rnd(0, 0);
-            std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
-            //auto generatorTarget = std::make_shared<TempTarget>(generatorTemp);
-            //generatorTarget->set_posterior(target->state);
-            //generator = std::make_shared<ChainType>(generatorTarget, 0);
-            //generator->recordSamples = false;
-            //std::cout << "Creating these from " << nChainReservoir*generatorSkip + nGeneratorBurnin << " samples of a generator chain at temperature " << generatorTemp << ". 
-            //generator->run(nChainReservoir*generatorSkip, nGeneratorBurnin, nGeneratorBurnin, generatorSkip);
+        pcg32 rnd(0, 0);
+        std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+        //auto generatorTarget = std::make_shared<TempTarget>(generatorTemp);
+        //generatorTarget->set_posterior(target->state);
+        //generator = std::make_shared<ChainType>(generatorTarget, 0);
+        //generator->recordSamples = false;
+        //std::cout << "Creating these from " << nChainReservoir*generatorSkip + nGeneratorBurnin << " samples of a generator chain at temperature " << generatorTemp << ". 
+        //generator->run(nChainReservoir*generatorSkip, nGeneratorBurnin, nGeneratorBurnin, generatorSkip);
+        
+        if (!generator->recordSamples)
+            std::cout << "Re-evaluating chain samples for their likelihood given the current target. This is as many times quicker as the original chain as the thinning.\n";
 
+        for (size_t i = 0; i < generator->loglikes.size(); ++i) {
+            Float oldlogprob = generator->loglikes[i];
+            /* if samples have not been saved fully, re-evaluate original loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+             * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+             * we should re-evaluate */
+           
+            if (generator->recordSamples) {
+                target->set_posterior(generator->samples[i]);
+            }
+            else  { 
 
-            std::cout << "A" << generator->loglikes.size() <<  " " << generator->samples.size() << std::endl;
-            for (size_t i = 0; i < generator->loglikes.size(); ++i) {
-                Float oldlogprob = generator->loglikes[i];
-                /* if samples have not been saved fully, re-evaluate original loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
                  * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
                  * we should re-evaluate */
-               
-                if (generator->recordSamples) {
-                    target->set_posterior(generator->samples[i]);
-                }
-                else  { 
-                    /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
-                     * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
-                     * we should re-evaluate */
-                    target->state->setInitialConditions(generator->ics[i]);
-                    //target->state->eval(); //already done in other functions. 
-                    /* this is assigning target's state to itself, but also computing the new weight! */
-                    target->set_posterior(target->state);
-                }
-
-                Float newlogprob = target->logprobability(0); 
-                trialChainICs.push_back(std::make_pair(generator->ics[i], newlogprob - oldlogprob));
+                target->state->setInitialConditions(generator->ics[i]);
+                //target->state->eval(); //already done in other functions. 
+                /* this is assigning target's state to itself, but also computing the new weight! */
+                target->set_posterior(target->state);
             }
-            std::cout << "H" << std::endl;
 
-            stepsizes = generator->target->state->get_stepsizes();
-            std::cout << "before bootstrap" << std::endl;
-            bootstrap(rnd, trialChainICs);
+            Float newlogprob = target->logprobability(0); 
+            trialChainICs.push_back(std::make_pair(generator->ics[i], newlogprob - oldlogprob));
+
+            //std::cout << generator->ics[i][0][0] << " " << generator->ics[i][0][1] << "\t"; 
+        }
+
+        stepsizes = generator->target->state->get_stepsizes();
+        bootstrap(rnd, trialChainICs);
     }
 
+    ChainManager(std::vector<ChainType> generators, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}, chains{}, chainICs{}  { 
+
+        if (generators.size() == 0) {
+            std::cout << "Generator chains passed to ChainMananger do not contain any chains. Aborting construction. \n"; 
+        }
+        else {
+            pcg32 rnd(0, 0);
+            std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+            
+            if (!generators[0].recordSamples)
+                std::cout << "Re-evaluating chain samples for their likelihood given the current target. This is as many times quicker as the original chain as the thinning.\n";
+
+            for (auto& generator : generators) { 
+                for (size_t i = 0; i < generator.loglikes.size(); ++i) {
+
+                    /* higher chain weight is a sample weight, equivalent to LOWER probability of the distribution (less likely that chain goes there, and indeed, 
+                     * we want to say that we have only one chain going here, but should have "weight" chains. The lower probability 
+                     * does increase the chance of picking this state as expected, since we need to subtract this number below! */
+                    Float oldlogprob = generator.loglikes[i] - std::log(generator.weight);
+                   
+                    if (generator.recordSamples) {
+                        target->set_posterior(generator.samples[i]);
+                    }
+                    else  { 
+
+                        /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                         * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+                         * we should re-evaluate */
+                        target->state->setInitialConditions(generator.ics[i]);
+                        //target->state->eval(); //already done in other functions. 
+                        /* this is assigning target's state to itself, but also computing the new weight! */
+                        target->set_posterior(target->state);
+                    }
+
+                    Float newlogprob = target->logprobability(0); 
+                    trialChainICs.push_back(std::make_pair(generator.ics[i], newlogprob - oldlogprob));
+
+                }
+
+            }
+
+            stepsizes = generators[0].target->state->get_stepsizes();
+            bootstrap(rnd, trialChainICs);
+        }
+    }
 
     std::vector<Float> stepsizes;
 
-    void run_chains(size_t nSteps, size_t thinning, Float stepsizefac) {
+    void run_all(size_t nSteps, size_t thinning, Float stepsizefac) {
 
         for (auto& s : stepsizes) 
                 s *= stepsizefac;
@@ -1368,20 +1415,28 @@ public:
             }
         );
 
+        std::cout << "first likelihood " << chains[0].loglikes[0];
         std::cout << "Chain runs completed." << std::endl << std::endl;
 
     }
 
     ChainType& get_chain(size_t i) {
         if (chains.size() == 0) {   
-            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but no valid chain is present. call ChainManager::run_chains first!";
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but no valid chain is present. call ChainManager::run_chains first!\n";
             throw;
         }
         if (chains.size() <= i) {   
-            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but only up to " << chains.size() << " chains are present. Valid indices up to " <<chains.size() -1 << " only!";
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but only up to " << chains.size() << " chains are present. Valid indices up to " <<chains.size() -1 << " only!\n";
             throw;
         }
         return chains[i];
+    }
+
+    auto get_all_chains() {
+        if (chains.size() == 0) {   
+            std::cout << "ChainManager::get_all_chains: Requested chains of the manager, but no valid chain is present. call ChainManager::run_chains first!\n";
+        }
+        return chains;
     }
 
     void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk) {
@@ -1418,14 +1473,14 @@ protected:
             if (trialChainICs[i].second > maxsofar)
                 maxsofar = trialChainICs[i].second;
 
-        std::cout << "Highest likelihood in set: " << maxsofar << "\n";
+        std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
+        std::cout << "Highest log probability in set: " << maxsofar << "\n";
 
         for (size_t i = 0; i < trialChainICs.size(); ++i)  { 
             trialChainICs[i].second = std::exp(trialChainICs[i].second - maxsofar);
             total += trialChainICs[i].second; 
         }
 
-        std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
         discreteCDF.push_back(trialChainICs[0].second);
         for (size_t i = 1; i < trialChainICs.size(); ++i) 
             discreteCDF.push_back(discreteCDF[i-1] + trialChainICs[i].second);
@@ -1453,6 +1508,10 @@ protected:
             }
 
         }
+        for (size_t i = 0; i < nChain; ++i) {
+            std::cout << "\n" << " selected ICs are \n" <<  chainICs[i].first[0][0] << " " << chainICs[i].first[0][1] << "\t"; 
+        }
+
 
         std::cout << "Selection completed." << std::endl << std::endl; 
     }
