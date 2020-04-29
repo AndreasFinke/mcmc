@@ -156,10 +156,12 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("recordSamples", &MetropolisChain::recordSamples)
         .def_readwrite("writeSamplesToDisk", &MetropolisChain::writeSamplesToDisk);
     py::class_<ChainManager<MetropolisChain>>(m, "ChainManager")
+        .def(py::init<std::shared_ptr<Target>, size_t>())
         .def(py::init<std::shared_ptr<Target>, size_t, size_t>())
         .def(py::init<std::shared_ptr<MetropolisChain>, std::shared_ptr<Target>, size_t>())
         .def(py::init<std::vector<MetropolisChain>, std::shared_ptr<Target>, size_t>())
         .def("run_all", &ChainManager<MetropolisChain>::run_all)
+        .def("run_all_adjust", &ChainManager<MetropolisChain>::run_all_adjust)
         .def("reevaluate_all", &ChainManager<MetropolisChain>::reevaluate_all)
         .def("get_chain", &ChainManager<MetropolisChain>::get_chain)
         .def("get_all_chains", &ChainManager<MetropolisChain>::get_all_chains);

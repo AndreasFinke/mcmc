@@ -296,14 +296,18 @@ public:
         }
     }
 
+    /* note this modifies the initialConditions saved in State, and instead of relying on SubspaceState::sampleIntitialConditions to actually also set them internally (it should) it sets explicitely */
     std::vector< std::vector<Float> > sampleInitialConditions(pcg32& rnd) {
         initialConditions.resize(0);
         for (size_t i = 0; i < state.size(); ++i) {
             initialConditions.push_back(state[i]->sampleInitialConditions(rnd));
         }
+        isEvaluated = false;
+        setInitialConditions(initialConditions);
         return initialConditions;
     }
 
+    /* assuming they are set internally, this works even after State::sampleInitialConditions. And if they have changed internally it's an update request */
     std::vector< std::vector<Float> > getInitialConditions() {
         initialConditions.resize(0);
         for (size_t i = 0; i < state.size(); ++i) {
@@ -1254,6 +1258,37 @@ protected:
 template<class ChainType> 
 class ChainManager  { 
 public:
+    ChainManager(std::shared_ptr<Target> target, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
+
+        pcg32 rnd(0, 0);
+        /*ICs, probability */
+
+        std::cout << "\nConstructing " << nChain << " random inital states. " << std::endl; 
+        
+        while (chainICs.size() < nChain) {
+
+            /* sample some new ICs and evaluate posterior */
+            target->state->sampleInitialConditions(rnd);
+            //target->state->eval();
+            target->set_posterior(target->state);
+
+            /* fix t = 0 for time dependent temperature targets */
+            Float prob = target->logprobability(0);
+
+            if ( !std::isnan(prob) && !std::isinf(prob) ) {
+                std::cout << "Logprobabilty of state " << chainICs.size() << " is " << prob << "\n";
+
+                /* forget about initial probability. Assuming burnin will be used and chain will mix */
+                chainICs.push_back(std::make_pair(target->state->initialConditions, 1)); 
+            //std::cout << target->state->loglikelihood() << " " << prob << "\n";
+
+            }
+
+        }
+
+        /* no way to know so far - can obtain later in run_all_adjust */
+        stepsizes = std::vector<Float>(target->state->state.size(), Float(1));
+    }
     ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
 
         pcg32 rnd(0, 0);
@@ -1415,7 +1450,47 @@ public:
             }
         );
 
-        std::cout << "first likelihood " << chains[0].loglikes[0];
+        std::cout << "Chain runs completed." << std::endl << std::endl;
+
+    }
+    void run_all_adjust(size_t nSteps, size_t nAdjust, size_t thinning) {
+
+        chains = {};
+
+        for (size_t i = 0; i < chainICs.size(); ++i) {
+
+            /* we want separate targets (and states) for parallel chains */
+            std::shared_ptr<Target> tar = target->deep_copy();
+
+            /* calls State::eval() */
+            tar->state->setInitialConditions(chainICs[i].first);
+
+            tar->set_posterior(tar->state);
+            
+            chains.push_back(ChainType(tar, i+1));
+
+            std::cout << "Initialized chain " << i << " with true loglikelihood = " << tar->state->loglikelihood() << "\n";
+            chains[i].recordSamples = false;
+            chains[i].weight = chainICs[i].second;
+        }
+
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
+                [&](tbb::blocked_range<size_t> range) {
+                
+
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+                //for (size_t i = 0; i < chains.size(); ++i) {
+                    std::cout << "Started chain " << i << "." << std::endl; 
+
+
+                    chains[i].run(nSteps, 0, nAdjust, thinning);
+
+                }
+            }
+        );
+
+        stepsizes = chains[0].target->state->get_stepsizes();
         std::cout << "Chain runs completed." << std::endl << std::endl;
 
     }

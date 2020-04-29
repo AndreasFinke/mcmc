@@ -7,7 +7,7 @@
 #include <iostream>
 #include <chrono>
 
-#define TIMING
+//#define TIMING
 
 struct TinyTimer {
     TinyTimer() : startupTime(get_time()) {}
