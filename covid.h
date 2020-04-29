@@ -355,8 +355,8 @@ public:
 
     std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
         std::vector<Float> ret = {};
-        ret.push_back(3000 + 5000*rnd.nextDouble());
-        ret.push_back(3000 + 5000*rnd.nextDouble());
+        ret.push_back(1000 + 5000*rnd.nextDouble());
+        ret.push_back(2000 + 8000*rnd.nextDouble());
         ret.push_back(25+(maxDelayDaysTilData-25)*rnd.nextDouble());
 
         if (ret[0] > ret[1])
@@ -371,15 +371,19 @@ public:
 
             //vals.push_back(rnd.nextDouble()*2.5);
         //}
-        vals.push_back(0.8+rnd.nextDouble()*0.4);
-        vals.push_back(0.55+rnd.nextDouble()*0.3);
-        vals.push_back(0.25+rnd.nextDouble()*0.2);
-        vals.push_back(0.25+rnd.nextDouble()*0.2);
+        vals.push_back(0.7+rnd.nextDouble()*0.3);
+        vals.push_back(0.4+rnd.nextDouble()*0.3);
+        vals.push_back(0.2+rnd.nextDouble()*0.2);
+        vals.push_back(0.15+rnd.nextDouble()*0.2);
         std::sort(vals.begin(), vals.end(), std::greater<>());
        
         ret.insert(ret.end(), vals.begin(), vals.end());
 
-        ret.push_back(rnd.nextDouble()*3);
+        ret.push_back(rnd.nextDouble()*5);
+
+        for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) { 
+            ret.push_back(1);
+        }
 
         setInitialConditions(ret);
         return ret;
@@ -633,22 +637,23 @@ public:
                 }
             //}
 
+            /* compute and copy weighted loglikelihood to loglike */
+            for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
+                
+                if (std::isnan(deadBuf[shift][i+maxDelayDaysTilData]) ) {
+                    /* never accept crazy states with exploding number of cases leading to NaN */
+                    loglike = -1e10;
+                    break;
+                }
+
+                Float delta = deadBuf[shift][i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
+
+                loglike += shift_weight(shift)*(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
+            }
 
         } // shift
 
-        /* compute and copy weighted loglikelihood to loglike */
-        for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
-            
-            if (std::isnan(getCoordsAt("dead")[i+maxDelayDaysTilData]) ) {
-                /* never accept crazy states with exploding number of cases leading to NaN */
-                loglike = -1e10;
-                break;
-            }
 
-            Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
-
-            loglike +=(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
-        }
 
     } 
 #define COUT(str) ; // std::cout << str;
