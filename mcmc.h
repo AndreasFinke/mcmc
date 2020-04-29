@@ -1409,7 +1409,8 @@ public:
 
     std::vector<Float> stepsizes;
 
-    void run_all(size_t nSteps, size_t thinning, Float stepsizefac) {
+    void run_all(size_t nSteps, size_t thinning, Float stepsizefac, int nThread) {
+        tbb::task_scheduler_init init(nThread);
 
         for (auto& s : stepsizes) 
                 s *= stepsizefac;
@@ -1453,8 +1454,8 @@ public:
         std::cout << "Chain runs completed." << std::endl << std::endl;
 
     }
-    void run_all_adjust(size_t nSteps, size_t nAdjust, size_t thinning) {
-
+    void run_all_adjust(size_t nSteps, size_t nAdjust, size_t thinning, int nThread) {
+        tbb::task_scheduler_init init(nThread);
         chains = {};
 
         for (size_t i = 0; i < chainICs.size(); ++i) {
@@ -1514,7 +1515,8 @@ public:
         return chains;
     }
 
-    void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk) {
+    void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk, int nThread) {
+        tbb::task_scheduler_init init(nThread);
         tbb::parallel_for(
             tbb::blocked_range<size_t>(0, chainICs.size(), 1),
                 [&](tbb::blocked_range<size_t> range) {
