@@ -791,9 +791,9 @@ public:
                 COUT("(L) ")
             }
 
-            bound(newstate->getCoordsAt("mild0")[0], Float(3000), Float(10000));
+            bound(newstate->getCoordsAt("mild0")[0], Float(1000), Float(10000));
             //bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
-            bound(newstate->getCoordsAt("high0")[0], Float(3000), Float(10000));
+            bound(newstate->getCoordsAt("high0")[0], Float(1000), Float(10000));
             //bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
             
             //if (newstate->getCoordsAt("betaHigh")[0] < newstate->getCoordsAt("betaMild")[0])
@@ -940,8 +940,8 @@ public:
         for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
                 bound(getCoordsAt("behavior")[i], Float(0), Float(2));
         }
-        bound(getCoordsAt("mild0")[0], Float(3000), Float(10000));
-        bound(getCoordsAt("high0")[0], Float(3000), Float(10000));
+        bound(getCoordsAt("mild0")[0], Float(1000), Float(10000));
+        bound(getCoordsAt("high0")[0], Float(1000), Float(10000));
         //bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
         //bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
     }
