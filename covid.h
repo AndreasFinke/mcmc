@@ -438,63 +438,115 @@ public:
         //getCoordsAt("betaMild")[0] = std::exp(std::log(getCoordsAt("mild0")[0])/getCoordsAt("delay")[0]*3)/3;
         //getCoordsAt("betaHigh")[0] = std::exp(std::log(getCoordsAt("high0")[0])/getCoordsAt("delay")[0]*3)/3;
 
-        getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
-        getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
+        /* THIS WAS WRONG! need to stick to the computation at integer days and interpolate at the end. Otherwise if betas are fixed when shifting at least one shift will be dramatically 
+         * worse than the other, and interpolation doesn't make sense. Could at most think about doing fractional but with shift added, but doesn't seem to make any sense... */
+        //getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], getCoordsAt("delay")[0]);
+        //getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], getCoordsAt("delay")[0]);
         
-        for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
-            getCoordsAt("discontinuousVals")[i] = getCoordsAt("discontinuousValsBeta")[i]/std::sqrt(getCoordsAt("betaMild")[0]);
-            /* prior on behaviour not increasing with measures */
-            if (getCoordsAt("discontinuousVals")[i] > 1) {
-                Float penality = (getCoordsAt("discontinuousVals")[i]-1);
-                penality *= penality;
-                loglike -= 100000*penality;
-            }
-        }
 
-        auto piecewise = [&] (int k) -> Float { 
-            int found = -1;
-            for (size_t m = 0; m < data.discontinuousDays.size()-1; ++m) {
-                if ( (data.discontinuousDays[m] <= k - maxDelayDaysTilData) && (k - maxDelayDaysTilData < data.discontinuousDays[m+1]) ) { 
-                    found = m;
-                    break;
-                } 
-            }
-            Float pcf = 1; /* default: before first discontinuous day */
-            /* last loop excluded last element. we might be behind (if not before, or empty vector) */
-            if ( (found == -1) && (k - maxDelayDaysTilData >= data.discontinuousDays.back() )) 
-                found = data.discontinuousDays.size() - 1;
-            if (found != -1)  /* after discontinuous day found */
-                pcf = getCoordsAt("discontinuousVals")[found];
-
-            return pcf;
-        };
-
-        auto smooth = [&] (int k) -> Float { 
-
-            Float smoothbehavior = 1;
-            if (k >= maxDelayDaysTilData) {
-                if (k - maxDelayDaysTilData < getCoordsAt("behavior").size())
-                    smoothbehavior = getCoordsAt("behavior")[k-maxDelayDaysTilData];
-                else 
-                    smoothbehavior = getCoordsAt("behavior").back();
-            }
-            return smoothbehavior;
-        };
-
-        getCoordsAt("totalBehavior").assign(nDaysTotal, Float(1));
-        for (int i = maxDelayDaysTilData-1; i < nDaysTotal; ++i) {
-            /* piecewise actually containts the square roots which are less clustered around 0, improving convergence dramatically */
-            getCoordsAt("totalBehavior")[i] = piecewise(i)*piecewise(i)*smooth(i);
-        }
 
         if (computeR)
             getCoordsAt("R").assign(nDaysTotal, Float(0));
 
-        int start = maxDelayDaysTilData - getCoordsAt("delay")[0];
+        /* the conversion Float->int has to be done exactly the same in all lines of the code. We decide to act with (int) directly on the delay,
+         * not the difference */
+        int start = maxDelayDaysTilData - int(getCoordsAt("delay")[0]);
+        /* set start to the smaller (earlier - it is a time index) of the two integer bounds of the float if we had not converted to int */
+        start -= 1; 
+        /* between 0 and 1: */
         Float fractionalDelay = maxDelayDaysTilData - getCoordsAt("delay")[0] - start;
         auto shift_weight = [&] (int shift) -> Float { return (1-shift)*(1-fractionalDelay) + shift*fractionalDelay; };
 
+
         for (int shift = 1; shift >= 0; --shift) { 
+            /* compute starting at start+shift . shift == 1 is one day later, shit_weight(1) = fractionalDelay gives the weight of the later start result etc */
+            /* fractionalDelay is misnamed, since it counts in direction of time, whereas delay goes against... should call it fractionalStart */
+            Float logprior = 0;
+
+            int d = int(getCoordsAt("delay")[0]) + 1 - shift;
+            //std::cout << "d " << d << " shift " << shift << " " << shift_weight(shift) << " " << " fracDel " << fractionalDelay << " start " << start << std::endl;
+
+            /* New: recompute for discrete days! */
+            getCoordsAt("betaMild")[0] = inverseProxy(getCoordsAt("mild0")[0], d);
+            getCoordsAt("betaHigh")[0] = inverseProxy(getCoordsAt("high0")[0], d);
+
+            auto proxy_jacobian = [&] (auto proxymap, Float arg) -> Float { 
+                Float eps = 0.1;
+                Float diff = inverseProxy(arg+eps, d) - inverseProxy(arg-eps, d);
+                return diff/eps;
+            };
+            /* flat prior on betas becomes this in new variables mild0, high0: */
+            Float p = proxy_jacobian(&DiseaseSpread::inverseProxy, getCoordsAt("mild0")[0]);
+            if (p > 0) 
+                logprior += std::log(p);
+            else
+                logprior = -100000;
+
+            //std::cout << "logprior  " << logprior << std::endl;
+
+            p = proxy_jacobian(&DiseaseSpread::inverseProxy, getCoordsAt("high0")[0]);
+            if (p > 0) 
+                logprior += std::log(p);
+            else
+                logprior = -100000;
+
+            //std::cout << "logprior  " << logprior << std::endl;
+
+            const Float n = 1.1;
+
+            for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+                getCoordsAt("discontinuousVals")[i] = getCoordsAt("discontinuousValsBeta")[i]*std::pow(getCoordsAt("betaMild")[0], -n);
+                /* prior on behaviour not increasing with measures */
+                if (getCoordsAt("discontinuousVals")[i] > 1) {
+                    Float penality = (getCoordsAt("discontinuousVals")[i]-1);
+                    penality *= penality;
+                    logprior -= 100000*penality;
+                }
+
+                /* flat prior on discontinuousVals becomes in the space of discontinuousValsBeta propto del discontnuousVals/ del discontinuousValsBeta for fixed beta 
+                 * which is pow(beta, -n) */
+                logprior += -n*std::log(getCoordsAt("betaMild")[0]);
+            }
+            //std::cout << "logprior  " << logprior << std::endl;
+
+            loglike += shift_weight(shift) * logprior; 
+
+            auto piecewise = [&] (int k) -> Float { 
+                int found = -1;
+                for (size_t m = 0; m < data.discontinuousDays.size()-1; ++m) {
+                    if ( (data.discontinuousDays[m] <= k - maxDelayDaysTilData) && (k - maxDelayDaysTilData < data.discontinuousDays[m+1]) ) { 
+                        found = m;
+                        break;
+                    } 
+                }
+                Float pcf = 1; /* default: before first discontinuous day */
+                /* last loop excluded last element. we might be behind (if not before, or empty vector) */
+                if ( (found == -1) && (k - maxDelayDaysTilData >= data.discontinuousDays.back() )) 
+                    found = data.discontinuousDays.size() - 1;
+                if (found != -1)  /* after discontinuous day found */
+                    pcf = getCoordsAt("discontinuousVals")[found];
+
+                return pcf;
+            };
+
+            auto smooth = [&] (int k) -> Float { 
+
+                Float smoothbehavior = 1;
+                if (k >= maxDelayDaysTilData) {
+                    if (k - maxDelayDaysTilData < getCoordsAt("behavior").size())
+                        smoothbehavior = getCoordsAt("behavior")[k-maxDelayDaysTilData];
+                    else 
+                        smoothbehavior = getCoordsAt("behavior").back();
+                }
+                return smoothbehavior;
+            };
+
+            getCoordsAt("totalBehavior").assign(nDaysTotal, Float(1));
+            for (int i = maxDelayDaysTilData-1; i < nDaysTotal; ++i) {
+                /* piecewise actually containts the square roots which are less clustered around 0, improving convergence dramatically */
+                getCoordsAt("totalBehavior")[i] = /*piecewise(i)*/piecewise(i)*smooth(i);
+            }
+
 
             /* Patient Zero. Treated as highly infectious on first day and like an average case afterwards, including mildly infectious trajectories, 
              * for simplicity. */
@@ -615,8 +667,7 @@ public:
             }
 
             /* copy weighted result to output */
-            //if (!data.computeOnlyLikelihood) { 
-                if (shift == 1) { 
+            if (shift == 1) { 
                 multset(getCoordsAt("mildlyInfectious"), mildlyInfectiousBuf[shift], shift_weight(shift));
                 multset(getCoordsAt("highlyInfectious"), highlyInfectiousBuf[shift], shift_weight(shift));
                 multset(getCoordsAt("incubating"), incubatingBuf[shift], shift_weight(shift));
@@ -625,7 +676,7 @@ public:
                 multset(getCoordsAt("serious"), seriousBuf[shift], shift_weight(shift));
                 multset(getCoordsAt("recovered"), recoveredBuf[shift], shift_weight(shift));
                 multset(getCoordsAt("dead"), deadBuf[shift], shift_weight(shift));
-                } else /*shift == 0, done after it is == 1! */ {
+            } else /*shift == 0, done after it is == 1! */ {
                 multadd(getCoordsAt("mildlyInfectious"), mildlyInfectiousBuf[shift], shift_weight(shift));
                 multadd(getCoordsAt("highlyInfectious"), highlyInfectiousBuf[shift], shift_weight(shift));
                 multadd(getCoordsAt("incubating"), incubatingBuf[shift], shift_weight(shift));
@@ -634,8 +685,7 @@ public:
                 multadd(getCoordsAt("serious"), seriousBuf[shift], shift_weight(shift));
                 multadd(getCoordsAt("recovered"), recoveredBuf[shift], shift_weight(shift));
                 multadd(getCoordsAt("dead"), deadBuf[shift], shift_weight(shift));
-                }
-            //}
+            }
 
             /* compute and copy weighted loglikelihood to loglike */
             for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
@@ -647,12 +697,26 @@ public:
                 }
 
                 Float delta = deadBuf[shift][i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
-
-                loglike += shift_weight(shift)*(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
+                //std::cout << "shift " << shift <<  " loglike before " << loglike;
+                //loglike += shift_weight(shift)*(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
+                //std::cout << " after " << loglike;
             }
 
         } // shift
 
+        //loglike = 0;
+            /* compute and copy weighted loglikelihood to loglike */
+        for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
+            
+            if (std::isnan(getCoordsAt("dead")[i+maxDelayDaysTilData]) ) {
+                /* never accept crazy states with exploding number of cases leading to NaN */
+                loglike = -1e10;
+                break;
+            }
+
+            Float delta = getCoordsAt("dead")[i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
+            loglike += (-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
+        }
 
 
     } 

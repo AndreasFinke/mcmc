@@ -116,6 +116,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def("eval", &State::eval)
         .def("loglike", &State::loglikelihood)
         .def("force_bounds", &State::force_bounds)
+        .def("get_coords", &State::getCoords)
         .def("get_all", &State::get_all)
         .def("getInitialConditions", &State::getInitialConditions)
         .def("setInitialConditions", &State::setInitialConditions)
