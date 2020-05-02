@@ -369,7 +369,7 @@ public:
 
     std::vector<Float> sampleInitialConditions(pcg32& rnd) override {
         std::vector<Float> ret = {};
-        ret.push_back(1000 + 5000*rnd.nextDouble());
+        ret.push_back(100 + 5500*rnd.nextDouble());
         ret.push_back(2000 + 8000*rnd.nextDouble());
         ret.push_back(25+(maxDelayDaysTilData-25)*rnd.nextDouble());
 
@@ -874,7 +874,7 @@ public:
                 COUT("(L) ")
             }
 
-            bound(newstate->getCoordsAt("mild0")[0], Float(1000), Float(10000));
+            bound(newstate->getCoordsAt("mild0")[0], Float(100), Float(10000));
             //bound(newstate->getCoordsAt("betaMild")[0], Float(0), Float(10));
             bound(newstate->getCoordsAt("high0")[0], Float(1000), Float(10000));
             //bound(newstate->getCoordsAt("betaHigh")[0], Float(0), Float(10));
@@ -1023,7 +1023,7 @@ public:
         for (size_t i = 0; i < getCoordsAt("behavior").size(); ++i) {
                 bound(getCoordsAt("behavior")[i], Float(0), Float(2));
         }
-        bound(getCoordsAt("mild0")[0], Float(1000), Float(10000));
+        bound(getCoordsAt("mild0")[0], Float(100), Float(10000));
         bound(getCoordsAt("high0")[0], Float(1000), Float(10000));
         //bound(getCoordsAt("betaMild")[0], Float(0), Float(100));
         //bound(getCoordsAt("betaHigh")[0], Float(0), Float(100));
