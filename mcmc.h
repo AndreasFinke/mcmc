@@ -1022,7 +1022,7 @@ public:
                 if (writeSamplesToDisk) { 
                     auto data = target->state->get_all();
 
-                    file << "weight " << 1/target->state->weight << "\n";
+                    file << "weight " << 1/target->state->weight << " loglike " << target->state->loglikelihood() << "\n";
                     for (auto& [name, vec] : data) {
                         file << name << " ";
 
@@ -1146,7 +1146,7 @@ public:
                 evalstate->setInitialConditions(ics[i]);
                 target->set_posterior(evalstate);
 
-                file << "weight " << 1/target->state->weight << "\n";
+                file << "weight " << 1/target->state->weight << " loglike " << target->state->loglikelihood() << "\n";
 
                 auto data = target->state->get_all();
 
