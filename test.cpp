@@ -93,6 +93,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("recovered", &AvgDiseaseTrajectory::recovered);
     py::class_<DiseaseSpread, SubspaceState, std::shared_ptr<DiseaseSpread>>(m, "DiseaseSpread")
         .def_readwrite("computeR", &DiseaseSpread::computeR)
+        .def_readwrite("stepsPerDay", &DiseaseSpread::stepsPerDay)
         .def(py::init<const DiseaseData&, const DiseaseParams&, int, double, double, int, size_t>());
 
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")

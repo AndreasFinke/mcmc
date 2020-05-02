@@ -223,7 +223,20 @@ public:
     std::array<double, nGrid> recoveredFromSerious;
     std::array<double, nGrid> deadFromSerious;
 
-    double getDay(size_t day, const std::array<double, nGrid>& ar) const {
+    double getStep(size_t timestep, size_t stepsPerDay, const std::array<double, nGrid>& ar) const {
+
+        if (timestep == 0) 
+            return ar[0];
+
+        size_t i1 = size_t(nGrid*(double(timestep-1)/(stepsPerDay*nDays)));
+        size_t i2 = size_t(nGrid*(double(timestep)/(stepsPerDay*nDays)));
+        if (i2 > nGrid-1) {
+            std::cout << "Access past last day of trajectory!\n";
+            return 0;
+        }
+        return ar[i2]-ar[i1];
+    }
+    double getDay(size_t day,const std::array<double, nGrid>& ar) const {
 
         if (day == 0) 
             return ar[0];
@@ -296,6 +309,7 @@ public:
     int nPredictDays, maxDelayDaysTilData;
     int popSize;
     int nDaysTotal;
+    int stepsPerDay = 1;
     
     bool computeR = false;
 
@@ -450,20 +464,21 @@ public:
 
         /* the conversion Float->int has to be done exactly the same in all lines of the code. We decide to act with (int) directly on the delay,
          * not the difference */
-        int start = maxDelayDaysTilData - int(getCoordsAt("delay")[0]);
+        int start = maxDelayDaysTilData*stepsPerDay - int(getCoordsAt("delay")[0]*stepsPerDay);
         /* set start to the smaller (earlier - it is a time index) of the two integer bounds of the float if we had not converted to int */
         start -= 1; 
         /* between 0 and 1: */
-        Float fractionalDelay = maxDelayDaysTilData - getCoordsAt("delay")[0] - start;
+        Float fractionalDelay = (maxDelayDaysTilData - getCoordsAt("delay")[0])*stepsPerDay - start;
+        /* fractionalDelay is misnamed, since it counts in direction of time, whereas delay goes against... should call it fractionalStart */
         auto shift_weight = [&] (int shift) -> Float { return (1-shift)*(1-fractionalDelay) + shift*fractionalDelay; };
 
 
         for (int shift = 1; shift >= 0; --shift) { 
             /* compute starting at start+shift . shift == 1 is one day later, shit_weight(1) = fractionalDelay gives the weight of the later start result etc */
-            /* fractionalDelay is misnamed, since it counts in direction of time, whereas delay goes against... should call it fractionalStart */
             Float logprior = 0;
 
-            int d = int(getCoordsAt("delay")[0]) + 1 - shift;
+            /* delay at left (shift = 0) and right (shift = 1) boundary in days, which is Floating point only due to this conversion in day units*/
+            Float d = Float(int(getCoordsAt("delay")[0]*stepsPerDay) + 1 - shift)/stepsPerDay;
             //std::cout << "d " << d << " shift " << shift << " " << shift_weight(shift) << " " << " fracDel " << fractionalDelay << " start " << start << std::endl;
 
             /* New: recompute for discrete days! */
@@ -492,9 +507,9 @@ public:
 
             //std::cout << "logprior  " << logprior << std::endl;
 
-            const Float n = 1.1;
+            const Float n = 1.0;
 
-            for (size_t i = 0, j = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
+            for (size_t i = 0; i < getCoordsAt("discontinuousVals").size(); ++i) { 
                 getCoordsAt("discontinuousVals")[i] = getCoordsAt("discontinuousValsBeta")[i]*std::pow(getCoordsAt("betaMild")[0], -n);
                 /* prior on behaviour not increasing with measures */
                 if (getCoordsAt("discontinuousVals")[i] > 1) {
@@ -511,6 +526,7 @@ public:
 
             loglike += shift_weight(shift) * logprior; 
 
+            /* k is in days */
             auto piecewise = [&] (int k) -> Float { 
                 int found = -1;
                 for (size_t m = 0; m < data.discontinuousDays.size()-1; ++m) {
@@ -542,6 +558,7 @@ public:
             };
 
             getCoordsAt("totalBehavior").assign(nDaysTotal, Float(1));
+            /* so indeed i is in days, as claimed */
             for (int i = maxDelayDaysTilData-1; i < nDaysTotal; ++i) {
                 /* piecewise actually containts the square roots which are less clustered around 0, improving convergence dramatically */
                 getCoordsAt("totalBehavior")[i] = /*piecewise(i)*/piecewise(i)*smooth(i);
@@ -561,41 +578,42 @@ public:
             //getCoordsAt("recovered").assign(size, Float(0));
             //getCoordsAt("dead").assign(size, Float(0));
 
-            mildlyInfectiousBuf[shift].assign(nDaysTotal, Float(0));
-            highlyInfectiousBuf[shift].assign(nDaysTotal, Float(0));
-            incubatingBuf[shift].assign(nDaysTotal, Float(0));
-            asymptomaticBuf[shift].assign(nDaysTotal, Float(0));
-            mildBuf[shift].assign(nDaysTotal, Float(0));
-            seriousBuf[shift].assign(nDaysTotal, Float(0));
-            recoveredBuf[shift].assign(nDaysTotal, Float(0));
-            deadBuf[shift].assign(nDaysTotal, Float(0));
+            mildlyInfectiousBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            highlyInfectiousBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            incubatingBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            asymptomaticBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            mildBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            seriousBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            recoveredBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
+            deadBuf[shift].assign(nDaysTotal*stepsPerDay, Float(0));
 
+            /* dest is in days, source in steps */
             auto multset = [&](auto& dest, auto& source, double fac) {
                 for (size_t i = 0; i < dest.size(); ++i) { 
-                    dest[i] = fac*source[i]; 
+                    dest[i] = fac*source[i*stepsPerDay]; 
                 }
             };
             auto multadd = [&](auto& dest, auto& source, double fac) {
                 for (size_t i = 0; i < dest.size(); ++i) { 
-                    dest[i] += fac*source[i]; 
+                    dest[i] += fac*source[i*stepsPerDay]; 
                 }
             };
-            for (int i = start+shift; i < nDaysTotal; ++i) {
+            for (int i = start+shift; i < nDaysTotal*stepsPerDay; ++i) {
 
                 /* helper function distributing source on dest starting at k with factor n */
                 auto project = [&](size_t k, auto& dest, const auto& source, double n) {
                     double cumsum = 0;
-                    for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
+                    for (size_t d = 0; d < traj.nDays*stepsPerDay && (d + k < dest.size()); ++d) { 
                     //std::cout << "dest.size = " << dest.size() << " d = " << d << " k = " << k << "\n";
                         /* getDay only returns the deltas per day (can be negative)
                          * the cumulative sum is the actual number percentage */
-                        cumsum += traj.getDay(d, source);
+                        cumsum += traj.getStep(d, stepsPerDay, source);
                         if (cumsum > 1.01) std::cout << "ops\n";
                         dest[d+k] += n*cumsum; 
                     }
                 };
                 auto add = [&](size_t k, auto& dest, double n) {
-                    for (size_t d = 0; d < traj.nDays && (d + k < dest.size()); ++d) { 
+                    for (size_t d = 0; d < traj.nDays*stepsPerDay && (d + k < dest.size()); ++d) { 
                         dest[d+k] += n; 
                     }
                 };
@@ -620,19 +638,16 @@ public:
                 project(i, deadBuf[shift], traj.dead, newlyInfected);
                 /* correct for overfull hospitals assuming indepence of extra fatalities from their previous trajectory */
                 //Float overCapacity = getCoordsAt("serious")[i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
-                Float overCapacity = seriousBuf[shift][i]*params.probICUIfSerious - getCoordsAt("capacity")[i];
-                Float extraDeaths  = params.probLethalDailyWhenSeriousUntreated * overCapacity;
+                Float overCapacity = seriousBuf[shift][i]*params.probICUIfSerious - getCoordsAt("capacity")[i/stepsPerDay];
+                /* divide probability if multiple time steps per day - not quite the same, but similar */
+                Float extraDeaths  = (params.probLethalDailyWhenSeriousUntreated/stepsPerDay) * overCapacity;
                 /* unfortunately... */
                 if (extraDeaths > 0) {
-                    //add(i, getCoordsAt("dead"), extraDeaths);
                     add(i, deadBuf[shift], extraDeaths);
                     /* these people are missing in the future. we assume that probLethalDailyWhenSeriousAtHome is so large 
                      * that they died soon after becoming serious - many on the first day, many of the rest on the second. 
                      * approximating, they died today - then we can correct the future given these precomputed trajectories conditioned on becoming
                      * serious today */ 
-                    //project(i, getCoordsAt("serious"), traj.seriousFromSerious, -extraDeaths);
-                    //project(i, getCoordsAt("recovered"), traj.recoveredFromSerious, -extraDeaths);
-                    //project(i, getCoordsAt("dead"), traj.deadFromSerious, -extraDeaths);
                     project(i, seriousBuf[shift], traj.seriousFromSerious, -extraDeaths);
                     project(i, recoveredBuf[shift], traj.recoveredFromSerious, -extraDeaths);
                     project(i, deadBuf[shift], traj.deadFromSerious, -extraDeaths);
@@ -645,7 +660,12 @@ public:
                 //double nSusceptible = popSize - getCoordsAt("incubating")[i] - getCoordsAt("asymptomatic")[i] - getCoordsAt("mild")[i] - getCoordsAt("serious")[i] - getCoordsAt("recovered")[i] - getCoordsAt("dead")[i];
                 //newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*getCoordsAt("mildlyInfectious")[i] + getCoordsAt("betaHigh")[0]*getCoordsAt("highlyInfectious")[i]);
                 Float nSusceptible = popSize - incubatingBuf[shift][i] - asymptomaticBuf[shift][i] - mildBuf[shift][i] - seriousBuf[shift][i] - recoveredBuf[shift][i] - deadBuf[shift][i];
-                newlyInfected = getCoordsAt("totalBehavior")[i]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*mildlyInfectiousBuf[shift][i] + getCoordsAt("betaHigh")[0]*highlyInfectiousBuf[shift][i]);
+                if (nSusceptible < 0) nSusceptible = 0; 
+
+                /* beta rates also need to be divided by stepsPerDay */
+                newlyInfected = getCoordsAt("totalBehavior")[i/stepsPerDay]*nSusceptible/popSize/Float(stepsPerDay)*(getCoordsAt("betaMild")[0]*mildlyInfectiousBuf[shift][i] + getCoordsAt("betaHigh")[0]*highlyInfectiousBuf[shift][i]);
+
+                //std::cout << newlyInfected << " totalB " << getCoordsAt("totalBehavior")[i/stepsPerDay] << " nSus " << nSusceptible/popSize << " bm " << getCoordsAt("betaMild")[0] << " bh " << getCoordsAt("betaHigh")[0] << " mildly " << mildlyInfectiousBuf[shift][i] << " highly " << highlyInfectiousBuf[shift][i] << std::endl;
 
             } // i 
             
@@ -656,7 +676,7 @@ public:
                     Float R = 0;
                     Float mildcumsum = 0, highcumsum = 0;
                     for (int j = 0; j < traj.nDays && (j+i) < nDaysTotal; ++j) {
-                        Float nSusceptible = popSize - incubatingBuf[shift][i+j] - asymptomaticBuf[shift][i+j] - mildBuf[shift][i+j] - seriousBuf[shift][i+j] - recoveredBuf[shift][i+j] - deadBuf[shift][i+j];
+                        Float nSusceptible = popSize - incubatingBuf[shift][(i+j)*stepsPerDay] - asymptomaticBuf[shift][(i+j)*stepsPerDay] - mildBuf[shift][(i+j)*stepsPerDay] - seriousBuf[shift][(i+j)*stepsPerDay] - recoveredBuf[shift][(i+j)*stepsPerDay] - deadBuf[shift][(i+j)*stepsPerDay];
                         mildcumsum += traj.getMildlyInfectious(j);
                         highcumsum += traj.getHighlyInfectious(j);
                         R += getCoordsAt("totalBehavior")[i+j]*nSusceptible/popSize*(getCoordsAt("betaMild")[0]*mildcumsum + getCoordsAt("betaHigh")[0]*highcumsum);
@@ -688,24 +708,23 @@ public:
             }
 
             /* compute and copy weighted loglikelihood to loglike */
-            for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
+            //for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
                 
-                if (std::isnan(deadBuf[shift][i+maxDelayDaysTilData]) ) {
+                //if (std::isnan(deadBuf[shift][i+maxDelayDaysTilData]) ) {
                     /* never accept crazy states with exploding number of cases leading to NaN */
-                    loglike = -1e10;
-                    break;
-                }
+                    //loglike = -1e10;
+                    //break;
+                //}
 
-                Float delta = deadBuf[shift][i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
+                //Float delta = deadBuf[shift][i+maxDelayDaysTilData] - getCoordsAt("missedDeaths")[0] - data.deathsPerDay[i];
                 //std::cout << "shift " << shift <<  " loglike before " << loglike;
                 //loglike += shift_weight(shift)*(-0.5*delta*delta/(data.deathsSigma[i]*data.deathsSigma[i]));
                 //std::cout << " after " << loglike;
-            }
+            //}
 
         } // shift
 
-        //loglike = 0;
-            /* compute and copy weighted loglikelihood to loglike */
+        /* compute and copy weighted loglikelihood to loglike */
         for (size_t i = 0; i < data.deathsPerDay.size(); ++i)  { 
             
             if (std::isnan(getCoordsAt("dead")[i+maxDelayDaysTilData]) ) {
