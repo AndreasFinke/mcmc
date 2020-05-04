@@ -1735,12 +1735,11 @@ public:
             from = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
             to   = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
             val  = stepsize*rnd.nextFloat();
-            //std::cout << " from " << from << " to " << to <<"\n";
         } 
         while ( !moveMass(from, to, val) );
 
         Float newVol = accessibleStateVol(stepsize);
-        Float oldVol = newVol - std::min(stepsize, (*vals)[from]) + std::min(stepsize, (*vals)[to]) - std::min(stepsize, (*vals)[from]+val) - std::min(stepsize, (*vals)[to]-val);
+        Float oldVol = newVol - std::min(stepsize, (*vals)[from]) - std::min(stepsize, (*vals)[to]) + std::min(stepsize, (*vals)[from]+val) + std::min(stepsize, (*vals)[to]-val);
 
         volRatio = oldVol / newVol;
     }

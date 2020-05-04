@@ -198,8 +198,10 @@ public:
     Float minSigma;
     Float maxSigma;
 
+    bool usingShared = false;
+
     GaussianMixturePDF(const ProbabilityDistributionSamples& data, Float lower, Float upper, size_t nModes) :
-        SubspaceState({"A", "mu", "sig", "nNonzeroModes"}, 1, false), constraintAmplitudes(1), lower(lower), upper(upper), nModes(nModes), data(data) {
+        SubspaceState({"A", "mu", "sig", "nNonzeroModes"}, 1, false), constraintAmplitudes(1), lower(lower), upper(upper), nModes(nModes), data(&data) {
 
         minSigma = (upper-lower)/50;
         maxSigma = (upper-lower)*4;
@@ -210,27 +212,70 @@ public:
         for (size_t i = 0; i < nModes; ++i) 
             coords[1][i] = lower + (i+0.5)*(upper-lower)/(nModes);
 
+        constraintAmplitudes.link(&coords[0]);
+
+        usingShared = false;
+
+    }
+
+    std::string samples, errors;
+    GaussianMixturePDF(const std::string& samples, const std::string& errors, Float lower, Float upper, size_t nModes) :
+        SubspaceState({"A", "mu", "sig", "nNonzeroModes"}, 1, false), constraintAmplitudes(1), lower(lower), upper(upper), nModes(nModes), samples(samples), errors(errors) {
+
+        requestedSharedNames.push_back(samples);
+        requestedSharedNames.push_back(errors);
+
+        minSigma = (upper-lower)/50;
+        maxSigma = (upper-lower)*4;
+        setCoords({std::vector<Float>(nModes, Float(1)/(nModes)), 
+                    std::vector<Float>(nModes, 0), 
+                     std::vector<Float>(nModes, (upper-lower)/std::min(size_t(4), nModes)), std::vector<Float>(1,nModes)}); 
+
+        for (size_t i = 0; i < nModes; ++i) 
+            coords[1][i] = lower + (i+0.5)*(upper-lower)/(nModes);
+
+        constraintAmplitudes.link(&coords[0]);
+
+        usingShared = true;
+
     }
 
     void eval(const SharedParams& shared) override {
 
-        FloatP loglikeP(0);
+        if (usingShared == false) { 
+            FloatP loglikeP(0);
 
-        for (size_t i = 0; i < enoki::packets(data.y); ++i) { 
+            for (size_t i = 0; i < enoki::packets(data->y); ++i) { 
 
-            FloatP p_i(0); 
-            for (size_t m = 0; m < nModes; ++m) {
-                FloatP var = enoki::packet(data.sig, i);
-                FloatP y   = enoki::packet(data.y, i);
-                FloatP arg = y - coords[1][m];
-                var *= var; 
-                var += coords[2][m]*coords[2][m];
-                p_i += coords[0][m]/(enoki::sqrt(2*Float(3.14159265)*var))*enoki::exp(-arg*arg/(2*var));
+                FloatP p_i(0); 
+                for (size_t m = 0; m < nModes; ++m) {
+                    FloatP var = enoki::packet(data->sig, i);
+                    FloatP y   = enoki::packet(data->y, i);
+                    FloatP arg = y - coords[1][m];
+                    var *= var; 
+                    var += coords[2][m]*coords[2][m];
+                    p_i += coords[0][m]/(enoki::sqrt(2*Float(3.14159265)*var))*enoki::exp(-arg*arg/(2*var));
+                }
+                loglikeP += enoki::log(p_i);
+            };
+
+            loglike = enoki::hsum(loglikeP);
+        }
+        else { 
+            auto& y = shared.at(samples);
+            auto& sig = shared.at(errors);
+        
+            for (size_t i = 0; i < y.size(); ++i) { 
+                Float p_i = 0;
+                for (size_t m = 0; m < nModes; ++m) {
+                    Float var = sig[i]*sig[i];
+                    var += coords[2][m]*coords[2][m];
+                    Float arg = y[i] - coords[1][m];
+                    p_i += coords[0][m]/(std::sqrt(2*Float(3.14159265)*var))*std::exp(-arg*arg/(2*var));
+                }
+                loglike += std::log(p_i);
             }
-            loglikeP += enoki::log(p_i);
-        };
-
-        loglike = enoki::hsum(loglikeP);
+        }
 
         coords[3][0] = 0;
         for (size_t i = 0; i < nModes; ++i)
@@ -276,10 +321,11 @@ public:
                         newstate->coords[1][whichMode] += (rnd.nextFloat()-0.5)*(upper-lower)*0.6*std::min(stepsizeCorrectionFac, Float(1));
 
                         /* reflect at boundary, based on the previous comment */
-                        if (newstate->coords[1][whichMode] < lower) 
-                            newstate->coords[1][whichMode] = lower + (lower - newstate->coords[1][whichMode]);
-                        else if (newstate->coords[1][whichMode] > upper) 
-                            newstate->coords[1][whichMode] = upper - (newstate->coords[1][whichMode] - upper);
+                        bound (newstate->coords[1][whichMode], lower, upper);
+                        //if (newstate->coords[1][whichMode] < lower) 
+                            //newstate->coords[1][whichMode] = lower + (lower - newstate->coords[1][whichMode]);
+                        //else if (newstate->coords[1][whichMode] > upper) 
+                            //newstate->coords[1][whichMode] = upper - (newstate->coords[1][whichMode] - upper);
 
                     }
                     else {
@@ -293,10 +339,11 @@ public:
                             newstate->coords[2][whichMode] += (rnd.nextFloat()-0.5)*(maxSigma-minSigma)*0.05*std::min(stepsizeCorrectionFac, Float(1));
 
                         /*reflect at boundaries */
-                        if (newstate->coords[2][whichMode] < minSigma) 
-                            newstate->coords[2][whichMode] = minSigma + (minSigma - newstate->coords[2][whichMode]);
-                        else if (newstate->coords[2][whichMode] > maxSigma) 
-                            newstate->coords[2][whichMode] = maxSigma - (newstate->coords[2][whichMode] - maxSigma);
+                        bound(newstate->coords[2][whichMode], minSigma, maxSigma);
+                        //if (newstate->coords[2][whichMode] < minSigma) 
+                            //newstate->coords[2][whichMode] = minSigma + (minSigma - newstate->coords[2][whichMode]);
+                        //else if (newstate->coords[2][whichMode] > maxSigma) 
+                            //newstate->coords[2][whichMode] = maxSigma - (newstate->coords[2][whichMode] - maxSigma);
                     }
                 //}
             }
@@ -317,7 +364,7 @@ public:
     }
 private:
 
-    const ProbabilityDistributionSamples& data;
+    const ProbabilityDistributionSamples* data;
 
 };
 

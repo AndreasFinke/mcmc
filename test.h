@@ -202,7 +202,7 @@ class B : public  SubspaceState {
 
 public:
 
-    /* not how 1 indicates that the last 1 parameters in the list are derived. Thus, all in this case. */ 
+    /* note how 1 indicates that the last 1 parameters in the list are derived. Thus, all in this case. */ 
     B() : SubspaceState({"xmy"}, 1, true) {
         setCoords( {{99}} ); //anything... code has to be smart enough to update this given the real values later 
         requestedSharedNames.push_back("x and y");
@@ -231,7 +231,7 @@ class C : public  SubspaceState {
 
 public:
 
-    /* note how not mentioning properties of derived parameters (numbers and if they depend on shared) defaults to not having any */
+    /* note how not mentioning properties of derived parameters (2 more arguments shown above: how many and if they depend on shared) defaults to not having any */
     C() : SubspaceState({"z"}) {
         setCoords( {{-1}} ); //anything... code has to be smart enough to update this given the real values later 
     }

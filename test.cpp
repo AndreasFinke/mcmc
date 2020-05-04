@@ -52,7 +52,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("initialBetaMild", &DiseaseData::initialBetaMild)
         .def_readwrite("initialBetaHigh", &DiseaseData::initialBetaHigh)
         .def_readwrite("initialDelay", &DiseaseData::initialDelay)
-        .def_readwrite("initialMissedDeaths", &DiseaseData::initialMissedDeaths)
+        //.def_readwrite("initialMissedDeaths", &DiseaseData::initialMissedDeaths)
         .def_readwrite("fixBehaviorInAdvance", &DiseaseData::fixBehaviorInAdvance);
     py::class_<DiseaseParams>(m, "DiseaseParams")
         .def(py::init<>())
@@ -90,7 +90,7 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("dead", &AvgDiseaseTrajectory::dead)
         .def_readwrite("recovered", &AvgDiseaseTrajectory::recovered);
     py::class_<DiseaseSpread, SubspaceState, std::shared_ptr<DiseaseSpread>>(m, "DiseaseSpread")
-        .def_readwrite("computeR", &DiseaseSpread::computeR)
+        //.def_readwrite("computeR", &DiseaseSpread::computeR)
         .def(py::init<const DiseaseData&, const DiseaseParams&, int, double, double, int, size_t>());
 
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
