@@ -203,7 +203,7 @@ public:
     GaussianMixturePDF(const ProbabilityDistributionSamples& data, Float lower, Float upper, size_t nModes) :
         SubspaceState({"A", "mu", "sig", "nNonzeroModes"}, 1, false), constraintAmplitudes(1), lower(lower), upper(upper), nModes(nModes), data(&data) {
 
-        minSigma = (upper-lower)/50;
+        minSigma = (upper-lower)/100;
         maxSigma = (upper-lower)*4;
         setCoords({std::vector<Float>(nModes, Float(1)/(nModes)), 
                     std::vector<Float>(nModes, 0), 
@@ -262,6 +262,7 @@ public:
             loglike = enoki::hsum(loglikeP);
         }
         else { 
+            loglike = 0;
             auto& y = shared.at(samples);
             auto& sig = shared.at(errors);
         

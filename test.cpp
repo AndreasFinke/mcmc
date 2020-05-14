@@ -15,7 +15,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "distfind.h"
-#include "covid.h"
+#include "cosmo.h"
 
 namespace py = pybind11;
 
@@ -47,52 +47,6 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<SubspaceState, std::shared_ptr<SubspaceState>>(m, "SubspaceState")
         .def("get_names", &SubspaceState::get_names);
         //.def(py::init<std::map<std::string, int>>());
-    py::class_<DiseaseData>(m, "DiseaseData")
-        .def(py::init<const py::array_t<Float>, const py::array_t<Float>>())
-        .def_readwrite("initialBetaMild", &DiseaseData::initialBetaMild)
-        .def_readwrite("initialBetaHigh", &DiseaseData::initialBetaHigh)
-        .def_readwrite("initialDelay", &DiseaseData::initialDelay)
-        //.def_readwrite("initialMissedDeaths", &DiseaseData::initialMissedDeaths)
-        .def_readwrite("fixBehaviorInAdvance", &DiseaseData::fixBehaviorInAdvance);
-    py::class_<DiseaseParams>(m, "DiseaseParams")
-        .def(py::init<>())
-        .def_readwrite("probAsymp", &DiseaseParams::probAsymp)
-        .def_readwrite("probLethal", &DiseaseParams::probLethal)
-        .def_readwrite("probSerious", &DiseaseParams::probSerious)
-        .def_readwrite("probICUIfSerious", &DiseaseParams::probSerious)
-        .def_readwrite("timeIncub", &DiseaseParams::timeIncub)
-        .def_readwrite("timeIncubSigma", &DiseaseParams::timeIncubSigma)
-        .def_readwrite("timeMildDuration", &DiseaseParams::timeMildDuration)
-        .def_readwrite("timeMildDurationSigma", &DiseaseParams::timeMildDurationSigma)
-        .def_readwrite("timeMildToSerious", &DiseaseParams::timeMildToSerious)
-        .def_readwrite("timeMildToSeriousSigma", &DiseaseParams::timeMildToSeriousSigma)
-        .def_readwrite("timeSeriousToRecovered", &DiseaseParams::timeSeriousToRec)
-        .def_readwrite("timeSeriousToRecoveredSigma", &DiseaseParams::timeSeriousToRecSigma)
-        .def_readwrite("timeSeriousToDeath", &DiseaseParams::timeSeriousToDeath)
-        .def_readwrite("timeSeriousToDeathSigma", &DiseaseParams::timeSeriousToDeathSigma)
-        .def_readwrite("probLethalDailyWhenSeriousUntreated", &DiseaseParams::probLethalDailyWhenSeriousUntreated);
-    py::class_<AvgDiseaseTrajectory>(m, "AvgDiseaseTrajectory")
-        .def(py::init<const DiseaseParams&>())
-        .def("getIncubating", &AvgDiseaseTrajectory::getIncubating)
-        .def("getAsymptomatic", &AvgDiseaseTrajectory::getAsymptomatic)
-        .def("getMild", &AvgDiseaseTrajectory::getMild)
-        .def("getMildlyInfectious", &AvgDiseaseTrajectory::getMildlyInfectious)
-        .def("getHighlyInfectious", &AvgDiseaseTrajectory::getHighlyInfectious)
-        .def("getSerious", &AvgDiseaseTrajectory::getSerious)
-        .def("getDead", &AvgDiseaseTrajectory::getDead)
-        .def("getRecovered", &AvgDiseaseTrajectory::getRecovered)
-        .def_readwrite("incubating", &AvgDiseaseTrajectory::incubating)
-        .def_readwrite("asymptomatic", &AvgDiseaseTrajectory::asymptomatic)
-        .def_readwrite("mild", &AvgDiseaseTrajectory::mild)
-        .def_readwrite("infectiousMild", &AvgDiseaseTrajectory::infectiousMild)
-        .def_readwrite("infectiousHigh", &AvgDiseaseTrajectory::infectiousHigh)
-        .def_readwrite("serious", &AvgDiseaseTrajectory::serious)
-        .def_readwrite("dead", &AvgDiseaseTrajectory::dead)
-        .def_readwrite("recovered", &AvgDiseaseTrajectory::recovered);
-    py::class_<DiseaseSpread, SubspaceState, std::shared_ptr<DiseaseSpread>>(m, "DiseaseSpread")
-        //.def_readwrite("computeR", &DiseaseSpread::computeR)
-        .def(py::init<const DiseaseData&, const DiseaseParams&, int, double, double, int, size_t>());
-
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
         .def(py::init<>());
     py::class_<B, SubspaceState, std::shared_ptr<B>>(m, "B")
@@ -104,6 +58,9 @@ PYBIND11_MODULE(mcmc, m) {
 
     py::class_<FourGaussians, SubspaceState, std::shared_ptr<FourGaussians>>(m, "FourGaussians")
         .def(py::init<Float>());
+
+    py::class_<NeutronstarMergers, SubspaceState, std::shared_ptr<NeutronstarMergers>>(m, "NeutronstarMergers")
+        .def(py::init<const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>>());
 
     py::class_<SmoothnessPrior, SubspaceState, std::shared_ptr<SmoothnessPrior>>(m, "SmoothnessPrior")
         .def(py::init<const std::string&, Float, Float>());
@@ -136,6 +93,7 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<PiecewiseConstantPDF, SubspaceState, std::shared_ptr<PiecewiseConstantPDF>>(m, "PiecewiseConstantPDF")
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, int>());
     py::class_<GaussianMixturePDF, SubspaceState, std::shared_ptr<GaussianMixturePDF>>(m, "GaussianMixturePDF")
+        .def(py::init<const std::string&, const std::string&, Float, Float, size_t>())
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, size_t>());
     py::class_<MetropolisChain, std::shared_ptr<MetropolisChain>>(m, "Chain")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
