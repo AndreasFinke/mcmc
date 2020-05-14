@@ -296,14 +296,18 @@ public:
         }
     }
 
+    /* note this modifies the initialConditions saved in State, and instead of relying on SubspaceState::sampleIntitialConditions to actually also set them internally (it should) it sets explicitely */
     std::vector< std::vector<Float> > sampleInitialConditions(pcg32& rnd) {
         initialConditions.resize(0);
         for (size_t i = 0; i < state.size(); ++i) {
             initialConditions.push_back(state[i]->sampleInitialConditions(rnd));
         }
+        isEvaluated = false;
+        setInitialConditions(initialConditions);
         return initialConditions;
     }
 
+    /* assuming they are set internally, this works even after State::sampleInitialConditions. And if they have changed internally it's an update request */
     std::vector< std::vector<Float> > getInitialConditions() {
         initialConditions.resize(0);
         for (size_t i = 0; i < state.size(); ++i) {
@@ -1007,50 +1011,7 @@ public:
                 START_NAMED_TIMER("Sampling");
             }
 
-            if (i < nAdjust) {
-
-                if (adjustbar < int(nBar*Float(i)/nAdjust)) { 
-                    std::cout << "#" << std::flush;
-                    ++adjustbar;
-                }
-
-                nAccept = 0;
-                if (!target->step(rnd, rec, Float(i)/nAdjust, true, nAccept)) 
-                    return; 
-                //if (!singleStep(rec, nAccept, true))
-                    //return; 
-
-                int nRepeat = 20;
-                if (verbose)
-                    nRepeat = 10;
-
-                for (int j = 0; j < nRepeat-1; ++j)  
-                    target->step(rnd, rec, Float(i)/nAdjust, false, nAccept);
-
-                Float acceptRate = Float(nAccept)/nRepeat; 
-
-                /* maps 0.234 to 1, 0+ to zero and 1 to 2, smoothly */
-                auto rate2corr = [](Float x) { 
-                    return (1+0.726484*x*x*x*x)/(0.82051 + 0.0427315/(x+0.0001));
-                };
-
-                target->state->correctStepsizeCorrectionFac(rec, rate2corr(acceptRate));
-
-                if (verbose)
-                    std::cout << "Adjusted step size to " << rec.prop.begin()->second->stepsizeCorrectionFac << ".\n";
-
-            }
-            else {
-
-                if (progressbar < int(nBar*Float(std::max(0, i-nAdjust))/nSamples)) { 
-                    std::cout << "#" << std::flush;
-                    ++progressbar;
-                }
-                
-                target->step(rnd, rec, Float(i-nAdjust)/nSamples, true, nAccept);
-            }
-
-            if ((i > nBurnin) && (i % thinning) == 0) {
+            if ((i >= nBurnin) && (i % thinning) == 0) {
                 if (i < nAdjust) 
                     loglikes.push_back(target->logprobability(Float(i)/nAdjust));
                 else
@@ -1061,7 +1022,7 @@ public:
                 if (writeSamplesToDisk) { 
                     auto data = target->state->get_all();
 
-                    file << "weight " << 1/target->state->weight << "\n";
+                    file << "weight " << 1/target->state->weight << " loglike " << target->state->loglikelihood() << "\n";
                     for (auto& [name, vec] : data) {
                         file << name << " ";
 
@@ -1094,6 +1055,53 @@ public:
                 //}
                 //curr++;
             //}
+            if (i < nAdjust) {
+
+                if (adjustbar < int(nBar*Float(i)/nAdjust)) { 
+                    std::cout << "#" << std::flush;
+                    ++adjustbar;
+                }
+
+                nAccept = 0;
+                if (!target->step(rnd, rec, Float(i)/nAdjust, true, nAccept)) 
+                    return; 
+                //if (!singleStep(rec, nAccept, true))
+                    //return; 
+
+                int nRepeat = 20;
+                if (verbose)
+                    nRepeat = 10;
+
+                for (int j = 0; j < nRepeat-1; ++j) {
+                    int oldaccept = nAccept;
+                    target->step(rnd, rec, Float(i)/nAdjust, false, nAccept);
+                    //if (nAccept > oldaccept)
+                    //std::cout << rec.deltaloglike <<" (" << target->state->loglikelihood() << ")\n";
+                }
+
+                Float acceptRate = Float(nAccept)/nRepeat; 
+
+                /* maps 0.234 to 1, 0+ to zero and 1 to 2, smoothly */
+                auto rate2corr = [](Float x) { 
+                    return (1+0.726484*x*x*x*x)/(0.82051 + 0.0427315/(x+0.0001));
+                };
+
+                target->state->correctStepsizeCorrectionFac(rec, rate2corr(acceptRate));
+
+                if (verbose)
+                    std::cout << "Adjusted step size to " << rec.prop.begin()->second->stepsizeCorrectionFac << ".\n";
+
+            }
+            else {
+
+                if (progressbar < int(nBar*Float(std::max(0, i-nAdjust))/nSamples)) { 
+                    std::cout << "#" << std::flush;
+                    ++progressbar;
+                }
+                
+                target->step(rnd, rec, Float(i-nAdjust)/nSamples, true, nAccept);
+            }
+
 
         }
         STOP_TIMER;
@@ -1138,7 +1146,7 @@ public:
                 evalstate->setInitialConditions(ics[i]);
                 target->set_posterior(evalstate);
 
-                file << "weight " << 1/target->state->weight << "\n";
+                file << "weight " << 1/target->state->weight << " loglike " << target->state->loglikelihood() << "\n";
 
                 auto data = target->state->get_all();
 
@@ -1250,7 +1258,38 @@ protected:
 template<class ChainType> 
 class ChainManager  { 
 public:
-    ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}  {
+    ChainManager(std::shared_ptr<Target> target, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
+
+        pcg32 rnd(0, 0);
+        /*ICs, probability */
+
+        std::cout << "\nConstructing " << nChain << " random inital states. " << std::endl; 
+        
+        while (chainICs.size() < nChain) {
+
+            /* sample some new ICs and evaluate posterior */
+            target->state->sampleInitialConditions(rnd);
+            //target->state->eval();
+            target->set_posterior(target->state);
+
+            /* fix t = 0 for time dependent temperature targets */
+            Float prob = target->logprobability(0);
+
+            if ( !std::isnan(prob) && !std::isinf(prob) ) {
+                std::cout << "Logprobabilty of state " << chainICs.size() << " is " << prob << "\n";
+
+                /* forget about initial probability. Assuming burnin will be used and chain will mix */
+                chainICs.push_back(std::make_pair(target->state->initialConditions, 1)); 
+            //std::cout << target->state->loglikelihood() << " " << prob << "\n";
+
+            }
+
+        }
+
+        /* no way to know so far - can obtain later in run_all_adjust */
+        stepsizes = std::vector<Float>(target->state->state.size(), Float(1));
+    }
+    ChainManager(std::shared_ptr<Target> target, size_t nChainReservoir, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
 
         pcg32 rnd(0, 0);
         /*ICs, probability */
@@ -1269,6 +1308,8 @@ public:
 
             if ( !std::isnan(prob) && !std::isinf(prob) ) {
                 trialChainICs.push_back(std::make_pair(target->state->initialConditions, prob)); 
+            //std::cout << target->state->loglikelihood() << " " << prob << "\n";
+
             }
 
         }
@@ -1276,52 +1317,100 @@ public:
         bootstrap(rnd, trialChainICs);
     }
 
-    ChainManager(std::shared_ptr<ChainType> generator, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}  { 
+    ChainManager(std::shared_ptr<ChainType> generator, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}, chains{}, chainICs{}  { 
 
-            pcg32 rnd(0, 0);
-            std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
-            //auto generatorTarget = std::make_shared<TempTarget>(generatorTemp);
-            //generatorTarget->set_posterior(target->state);
-            //generator = std::make_shared<ChainType>(generatorTarget, 0);
-            //generator->recordSamples = false;
-            //std::cout << "Creating these from " << nChainReservoir*generatorSkip + nGeneratorBurnin << " samples of a generator chain at temperature " << generatorTemp << ". 
-            //generator->run(nChainReservoir*generatorSkip, nGeneratorBurnin, nGeneratorBurnin, generatorSkip);
+        pcg32 rnd(0, 0);
+        std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+        //auto generatorTarget = std::make_shared<TempTarget>(generatorTemp);
+        //generatorTarget->set_posterior(target->state);
+        //generator = std::make_shared<ChainType>(generatorTarget, 0);
+        //generator->recordSamples = false;
+        //std::cout << "Creating these from " << nChainReservoir*generatorSkip + nGeneratorBurnin << " samples of a generator chain at temperature " << generatorTemp << ". 
+        //generator->run(nChainReservoir*generatorSkip, nGeneratorBurnin, nGeneratorBurnin, generatorSkip);
+        
+        if (!generator->recordSamples)
+            std::cout << "Re-evaluating chain samples for their likelihood given the current target. This is as many times quicker as the original chain as the thinning.\n";
 
+        for (size_t i = 0; i < generator->loglikes.size(); ++i) {
+            Float oldlogprob = generator->loglikes[i];
+            /* if samples have not been saved fully, re-evaluate original loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+             * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+             * we should re-evaluate */
+           
+            if (generator->recordSamples) {
+                target->set_posterior(generator->samples[i]);
+            }
+            else  { 
 
-            std::cout << "A" << generator->loglikes.size() <<  " " << generator->samples.size() << std::endl;
-            for (size_t i = 0; i < generator->loglikes.size(); ++i) {
-                Float oldlogprob = generator->loglikes[i];
-                /* if samples have not been saved fully, re-evaluate original loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
                  * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
                  * we should re-evaluate */
-               
-                if (generator->recordSamples) {
-                    target->set_posterior(generator->samples[i]);
-                }
-                else  { 
-                    /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
-                     * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
-                     * we should re-evaluate */
-                    target->state->setInitialConditions(generator->ics[i]);
-                    //target->state->eval(); //already done in other functions. 
-                    /* this is assigning target's state to itself, but also computing the new weight! */
-                    target->set_posterior(target->state);
-                }
-
-                Float newlogprob = target->logprobability(0); 
-                trialChainICs.push_back(std::make_pair(generator->ics[i], newlogprob - oldlogprob));
+                target->state->setInitialConditions(generator->ics[i]);
+                //target->state->eval(); //already done in other functions. 
+                /* this is assigning target's state to itself, but also computing the new weight! */
+                target->set_posterior(target->state);
             }
-            std::cout << "H" << std::endl;
 
-            stepsizes = generator->target->state->get_stepsizes();
-            std::cout << "before bootstrap" << std::endl;
-            bootstrap(rnd, trialChainICs);
+            Float newlogprob = target->logprobability(0); 
+            trialChainICs.push_back(std::make_pair(generator->ics[i], newlogprob - oldlogprob));
+
+            //std::cout << generator->ics[i][0][0] << " " << generator->ics[i][0][1] << "\t"; 
+        }
+
+        stepsizes = generator->target->state->get_stepsizes();
+        bootstrap(rnd, trialChainICs);
     }
 
+    ChainManager(std::vector<ChainType> generators, std::shared_ptr<Target> targetRHS, size_t nChain) : target(targetRHS), nChain(nChain), stepsizes{}, chains{}, chainICs{}  { 
+
+        if (generators.size() == 0) {
+            std::cout << "Generator chains passed to ChainMananger do not contain any chains. Aborting construction. \n"; 
+        }
+        else {
+            pcg32 rnd(0, 0);
+            std::vector<std::pair<std::vector<std::vector<Float>>, Float>> trialChainICs;
+            
+            if (!generators[0].recordSamples)
+                std::cout << "Re-evaluating chain samples for their likelihood given the current target. This is as many times quicker as the original chain as the thinning.\n";
+
+            for (auto& generator : generators) { 
+                for (size_t i = 0; i < generator.loglikes.size(); ++i) {
+
+                    /* higher chain weight is a sample weight, equivalent to LOWER probability of the distribution (less likely that chain goes there, and indeed, 
+                     * we want to say that we have only one chain going here, but should have "weight" chains. The lower probability 
+                     * does increase the chance of picking this state as expected, since we need to subtract this number below! */
+                    Float oldlogprob = generator.loglikes[i] - std::log(generator.weight);
+                   
+                    if (generator.recordSamples) {
+                        target->set_posterior(generator.samples[i]);
+                    }
+                    else  { 
+
+                        /* re-evaluate loglikelihood with new target - I gave up on inverting oldlogprob with its target (the member of the generator chain) to get the original loglike and put that through the new target just to 
+                         * save some a fraction of the time the full generator chain took (assuming stong thinning). Targets include weights that depend on whatever... perhaps even derived parameters? so 
+                         * we should re-evaluate */
+                        target->state->setInitialConditions(generator.ics[i]);
+                        //target->state->eval(); //already done in other functions. 
+                        /* this is assigning target's state to itself, but also computing the new weight! */
+                        target->set_posterior(target->state);
+                    }
+
+                    Float newlogprob = target->logprobability(0); 
+                    trialChainICs.push_back(std::make_pair(generator.ics[i], newlogprob - oldlogprob));
+
+                }
+
+            }
+
+            stepsizes = generators[0].target->state->get_stepsizes();
+            bootstrap(rnd, trialChainICs);
+        }
+    }
 
     std::vector<Float> stepsizes;
 
-    void run_chains(size_t nSteps, size_t thinning, Float stepsizefac) {
+    void run_all(size_t nSteps, size_t thinning, Float stepsizefac, int nThread) {
+        tbb::task_scheduler_init init(nThread);
 
         for (auto& s : stepsizes) 
                 s *= stepsizefac;
@@ -1365,20 +1454,69 @@ public:
         std::cout << "Chain runs completed." << std::endl << std::endl;
 
     }
+    void run_all_adjust(size_t nSteps, size_t nAdjust, size_t thinning, int nThread) {
+        tbb::task_scheduler_init init(nThread);
+        chains = {};
+
+        for (size_t i = 0; i < chainICs.size(); ++i) {
+
+            /* we want separate targets (and states) for parallel chains */
+            std::shared_ptr<Target> tar = target->deep_copy();
+
+            /* calls State::eval() */
+            tar->state->setInitialConditions(chainICs[i].first);
+
+            tar->set_posterior(tar->state);
+            
+            chains.push_back(ChainType(tar, i+1));
+
+            std::cout << "Initialized chain " << i << " with true loglikelihood = " << tar->state->loglikelihood() << "\n";
+            chains[i].recordSamples = false;
+            chains[i].weight = chainICs[i].second;
+        }
+
+        tbb::parallel_for(
+            tbb::blocked_range<size_t>(0, chainICs.size(), 1),
+                [&](tbb::blocked_range<size_t> range) {
+                
+
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+                //for (size_t i = 0; i < chains.size(); ++i) {
+                    std::cout << "Started chain " << i << "." << std::endl; 
+
+
+                    chains[i].run(nSteps, 0, nAdjust, thinning);
+
+                }
+            }
+        );
+
+        stepsizes = chains[0].target->state->get_stepsizes();
+        std::cout << "Chain runs completed." << std::endl << std::endl;
+
+    }
 
     ChainType& get_chain(size_t i) {
         if (chains.size() == 0) {   
-            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but no valid chain is present. call ChainManager::run_chains first!";
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but no valid chain is present. call ChainManager::run_chains first!\n";
             throw;
         }
         if (chains.size() <= i) {   
-            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but only up to " << chains.size() << " chains are present. Valid indices up to " <<chains.size() -1 << " only!";
+            std::cout << "ChainManager::get_chain: Requested chain " << i << "of the manager, but only up to " << chains.size() << " chains are present. Valid indices up to " <<chains.size() -1 << " only!\n";
             throw;
         }
         return chains[i];
     }
 
-    void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk) {
+    auto get_all_chains() {
+        if (chains.size() == 0) {   
+            std::cout << "ChainManager::get_all_chains: Requested chains of the manager, but no valid chain is present. call ChainManager::run_chains first!\n";
+        }
+        return chains;
+    }
+
+    void reevaluate_all(std::shared_ptr<State> state, int nBurnin, bool recordSamples, bool writeSamplesToDisk, int nThread) {
+        tbb::task_scheduler_init init(nThread);
         tbb::parallel_for(
             tbb::blocked_range<size_t>(0, chainICs.size(), 1),
                 [&](tbb::blocked_range<size_t> range) {
@@ -1412,14 +1550,14 @@ protected:
             if (trialChainICs[i].second > maxsofar)
                 maxsofar = trialChainICs[i].second;
 
-        std::cout << "Highest likelihood in set: " << maxsofar << "\n";
+        std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
+        std::cout << "Highest log probability in set: " << maxsofar << "\n";
 
         for (size_t i = 0; i < trialChainICs.size(); ++i)  { 
             trialChainICs[i].second = std::exp(trialChainICs[i].second - maxsofar);
             total += trialChainICs[i].second; 
         }
 
-        std::cout << "Selecting " << nChain << " chains according to the target density." << std::endl; 
         discreteCDF.push_back(trialChainICs[0].second);
         for (size_t i = 1; i < trialChainICs.size(); ++i) 
             discreteCDF.push_back(discreteCDF[i-1] + trialChainICs[i].second);
@@ -1447,6 +1585,10 @@ protected:
             }
 
         }
+        for (size_t i = 0; i < nChain; ++i) {
+            std::cout << "\n" << " selected ICs are \n" <<  chainICs[i].first[0][0] << " " << chainICs[i].first[0][1] << "\t"; 
+        }
+
 
         std::cout << "Selection completed." << std::endl << std::endl; 
     }
