@@ -15,7 +15,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "distfind.h"
-#include "cosmo.h"
+//#include "cosmo.h"
 
 namespace py = pybind11;
 
@@ -59,8 +59,8 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<FourGaussians, SubspaceState, std::shared_ptr<FourGaussians>>(m, "FourGaussians")
         .def(py::init<Float>());
 
-    py::class_<NeutronstarMergers, SubspaceState, std::shared_ptr<NeutronstarMergers>>(m, "NeutronstarMergers")
-        .def(py::init<const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>>());
+    //py::class_<NeutronstarMergers, SubspaceState, std::shared_ptr<NeutronstarMergers>>(m, "NeutronstarMergers")
+        //.def(py::init<const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>, const py::array_t<Float>>());
 
     py::class_<SmoothnessPrior, SubspaceState, std::shared_ptr<SmoothnessPrior>>(m, "SmoothnessPrior")
         .def(py::init<const std::string&, Float, Float>());
@@ -111,7 +111,8 @@ PYBIND11_MODULE(mcmc, m) {
     py::class_<ChainManager<MetropolisChain>>(m, "ChainManager")
         .def(py::init<std::shared_ptr<Target>, size_t, size_t>())
         .def(py::init<std::shared_ptr<MetropolisChain>, std::shared_ptr<Target>, size_t>())
-        .def("run_chains", &ChainManager<MetropolisChain>::run_chains)
+        .def("run_all", &ChainManager<MetropolisChain>::run_all_adjust)
+        .def("run_all_adjust", &ChainManager<MetropolisChain>::run_all)
         .def("reevaluate_all", &ChainManager<MetropolisChain>::reevaluate_all)
         .def("get_chain", &ChainManager<MetropolisChain>::get_chain);
     py::class_<GradientDecent>(m, "GradientDecent")

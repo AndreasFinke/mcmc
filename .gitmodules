@@ -10,3 +10,6 @@
 [submodule "enoki"]
 	path = enoki
 	url = https://github.com/mitsuba-renderer/enoki.git
+[submodule "eigen"]
+	path = eigen
+	url = https://gitlab.com/libeigen/eigen.git

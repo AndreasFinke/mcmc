@@ -70,6 +70,7 @@ public:
     Float stepsizeCorrectionFac = 1;
     bool derivedOnShared;
     std::set<std::pair<size_t, size_t>> fixed = {};
+    int dim = 0;
 
     SubspaceState(std::vector<std::string>&& coordNames, bool derivedParamsDependOnSharedParams = false, size_t nDerived = 0) :  derivedOnShared(derivedParamsDependOnSharedParams), nDerived(nDerived) {  
         for (size_t i = 0; i < coordNames.size(); ++i) {
@@ -79,6 +80,11 @@ public:
     /* derived class constructor must call this! */
     void setCoords(std::vector<std::vector<Float>> init) {
         coords = init;
+        /*count number ofindependent variables to find actual dimension of space to be sampled */
+        dim = 0;
+        for (size_t i = 0; i < init.size() - nDerived; ++i) {
+            dim += init[i].size();
+        }
     }
 
 
@@ -245,13 +251,17 @@ public:
     //TODO make static? 
 
     Float weight = 1;
+    int dim = 0;
 
     bool isInitialized = false;
     bool isEvaluated = false;
 
     int sharedDependencyMaxDepth = 10;
 
-    void add(const std::shared_ptr<SubspaceState>& s) { state.push_back(s); } 
+    void add(const std::shared_ptr<SubspaceState>& s) { 
+        state.push_back(s);
+        dim += s.dim;
+    } 
 
     void addCoordsOf(const std::shared_ptr<State>& s) {
         for (size_t i = 0; i < state.size(); ++i) {
@@ -1172,6 +1182,40 @@ public:
                 samples.push_back(target->state->deep_copy()); 
             }
         }
+    }
+
+    /* using the independent sample coords encoded in the ics of a chain, carry out an online 1 pass algorithm to update the covariance and mean. 
+     * n is the number of samples that have been previously used here. more precisely, it is the sum of previous chain weights, which are frequency wwights. Note that we do not tak into account
+     * the target weights (which would be reliability weights) since we are not interested in the true covaraince of the unweighted distribution but really in the covaraince of the points the chain is producing,
+     * to enable better (decorrelated, scaled)  proposals*/
+    void update_covariance(Eigen::MatrixXd& cov, Eigen::VectorXd& mu, int& n,  std::shared_ptr<State> evalstate, int nBurnin) {
+        
+        else if (ics.size() == 0) { 
+            std::cout << "Impossilbe to update covariance from chain " << id << ". No points available. Run the chain(s) first! \n";
+            return;
+        }
+        if (nBurnin >= ics.size()) { 
+            std::cout << "Requested covariance update with burnin larger than number of stored points. Aborting.\n";
+            return;
+        }
+
+        cov *= (n-1);
+        Eigen::VectorXd x(evalstate.dim), dx(evalstate.dim);
+        for (size_t i = burnin; i < ics.size(); ++i) {
+            int idx = 0;
+            for (size_t j = 0; j < ics[i].size(); ++j) {
+                for (size_t k = 0; k < ics[i][j].size(); ++k) {
+                    x(idx) = ics[i][j][k];
+                    ++idx;
+                }
+            }
+            n += weight; 
+            dx = x - mu;
+            mu += weight/Float(n)*dx;
+            cov += weight*dx*(x-mu).transpose();
+        }
+
+        cov /= (n-1);
     }
 #if PY == 1
 
