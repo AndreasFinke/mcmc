@@ -57,7 +57,7 @@ template <typename T> void bound(T& val, T lower, T upper) {
 
 using SharedParams = std::map<std::string, std::vector<Float>>;
 
-class State; 
+class State;
 
 class SubspaceState {
 
@@ -76,7 +76,7 @@ public:
         for (size_t i = 0; i < coordNames.size(); ++i) {
             names[coordNames[i]] = i;
         }
-    } 
+    }
     /* derived class constructor must call this! */
     void setCoords(std::vector<std::vector<Float>> init) {
         coords = init;
@@ -93,11 +93,11 @@ public:
 
     /* derived class needs to implement these */
     virtual std::shared_ptr<SubspaceState> copy() const = 0;
-    virtual void eval(const SharedParams& shared) { 
+    virtual void eval(const SharedParams& shared) {
         loglike = 0;
     }
     //virtual Proposal step_impl(pcg32& rnd, const SharedParams& shared) const = 0;
-    virtual Proposal step(pcg32& rnd, const SharedParams& shared) const { 
+    virtual Proposal step(pcg32& rnd, const SharedParams& shared) const {
         auto newstate = copy();
         return Proposal{newstate, 1};
     }
@@ -122,19 +122,19 @@ public:
     inline std::optional<std::vector<Float>> getCoords(const std::string name) const {
         auto it = names.find(name);
         if (it != names.end()) {
-            return coords[it->second]; 
+            return coords[it->second];
         }
         else
             return {};
     }
 
     inline std::vector<Float>& getCoordsAt(const std::string name) {
-        return coords[names.at(name)]; 
+        return coords[names.at(name)];
     }
 
     std::map<std::string, std::vector<Float>> getAll() {
         std::map<std::string, std::vector<Float>> ret = {};
-        for (auto [name, idx] : names) 
+        for (auto [name, idx] : names)
             ret[name] = coords[idx];
         return ret;
     }
@@ -142,7 +142,7 @@ public:
     inline bool isDerived(const std::string name) const {
         auto it = names.find(name);
         if (it != names.end()) {
-            return it->second >= names.size()-nDerived; 
+            return it->second >= names.size()-nDerived;
         }
         else
             return {};
@@ -244,11 +244,11 @@ public:
     std::vector< std::vector<Float>  > initialConditions;
 
     /* for each, i-th, SubspaceState in state, we keep a corresponding i-th element in dependencies:
-     * a list of the other SubspaceStates that depend on the i-th SubspaceStates, together with a flag if 
-     * this dependency is on a derived parameter (not just coords) of the i-th SubspaceState AND if any 
+     * a list of the other SubspaceStates that depend on the i-th SubspaceStates, together with a flag if
+     * this dependency is on a derived parameter (not just coords) of the i-th SubspaceState AND if any
      * derived params of the i-th SubspaceState depend on shared parameters at all (or just coords of i-th subspace state)*/
     std::vector< std::vector< std::pair<size_t, bool>> > dependencies;
-    //TODO make static? 
+    //TODO make static?
 
     Float weight = 1;
     int dim = 0;
@@ -258,10 +258,10 @@ public:
 
     int sharedDependencyMaxDepth = 10;
 
-    void add(const std::shared_ptr<SubspaceState>& s) { 
+    void add(const std::shared_ptr<SubspaceState>& s) {
         state.push_back(s);
-        dim += s.dim;
-    } 
+        dim += s->dim;
+    }
 
     void addCoordsOf(const std::shared_ptr<State>& s) {
         for (size_t i = 0; i < state.size(); ++i) {
@@ -336,19 +336,19 @@ public:
     }
 
     void set_stepsizes(const std::vector<Float>& sz) {
-        for (size_t i = 0; i < state.size(); ++i) 
+        for (size_t i = 0; i < state.size(); ++i)
             state[i]->stepsizeCorrectionFac = sz[i];
     }
     std::vector<Float> get_stepsizes() {
         std::vector<Float> ret = {};
-        for (size_t i = 0; i < state.size(); ++i) 
+        for (size_t i = 0; i < state.size(); ++i)
             ret.push_back(state[i]->stepsizeCorrectionFac);
         return ret;
     }
 
-    std::map<std::string, std::vector<Float>> get_all() { 
+    std::map<std::string, std::vector<Float>> get_all() {
         std::map<std::string, std::vector<Float>> ret = {};
-        for (size_t i = 0; i < state.size(); ++i) { 
+        for (size_t i = 0; i < state.size(); ++i) {
             auto r = state[i]->getAll();
             ret.insert(r.begin(), r.end());
         }
@@ -356,14 +356,14 @@ public:
     }
 
     void force_bounds() {
-        for (size_t i = 0; i < state.size(); ++i) 
+        for (size_t i = 0; i < state.size(); ++i)
             state[i]->force_bounds();
     }
 
     std::shared_ptr<State> deep_copy() {
-        State ret(*this); //shallow copy as needed when collecting samples 
-        for (auto& s : ret.state) 
-            s = s->copy(); 
+        State ret(*this); //shallow copy as needed when collecting samples
+        for (auto& s : ret.state)
+            s = s->copy();
         return std::make_shared<State>(ret);
     }
 
@@ -473,8 +473,8 @@ public:
     /* Warning: this is just a getter! Make sure everything is evaluated. */
     Float loglikelihood() {
         Float l = 0;
-        for (auto&& subspace : state) 
-            l += subspace->loglike; 
+        for (auto&& subspace : state)
+            l += subspace->loglike;
         return l;
     }
 
@@ -596,8 +596,8 @@ public:
 
     }
 
-    /* assuming only the changed element of the "state" array of SubspaceStates has changed, evaluate only what is needed. 
-     * This is the same algorithm as above in the step function, but here we do not need and therefore do not want to copy the 
+    /* assuming only the changed element of the "state" array of SubspaceStates has changed, evaluate only what is needed.
+     * This is the same algorithm as above in the step function, but here we do not need and therefore do not want to copy the
      * relevant dependent SubspaceStates but modify them in place. It is easiest to write a new, similar function because of slight differences throughout... for comments see above */
     void eval_graph(size_t changed) {
         //std::map<size_t, std::shared_ptr<SubspaceState>> dependent;
@@ -686,7 +686,7 @@ private:
 
 };
 
-/* Target is a wrapper around State that adds user-defined weighing. 
+/* Target is a wrapper around State that adds user-defined weighing.
  * The standard Markov Chain is going to run on Target, not State, but e.g. simmulated annealing runs on State directly. */
 
 class Target {
@@ -977,7 +977,7 @@ public:
     bool computeMean = false;
     bool recordSamples = true;
     bool writeSamplesToDisk = false;
-    int id; 
+    int id;
     pcg32 rnd;
     std::shared_ptr<Target> target;
 
@@ -998,8 +998,8 @@ public:
         int progressbar = 0;
 
         std::ofstream file;
-        if (writeSamplesToDisk) { 
-            std::stringstream filename; 
+        if (writeSamplesToDisk) {
+            std::stringstream filename;
             filename << "samples" << id << ".txt";
             file.open(filename.str());
             file << "chainweight " << weight << "\n\n";
@@ -1009,9 +1009,9 @@ public:
 
         for (int i = 0; i < nSamples+nAdjust; ++i)  {
 
-            ProposalRecord rec; 
+            ProposalRecord rec;
 
-            if (i == nAdjust)  { 
+            if (i == nAdjust)  {
                 std::cout << "\n\nFinished adjustments.\n";
                 for (auto & s : target->state->state)
                     std::cout << s->stepsizeCorrectionFac << "\n";
@@ -1022,14 +1022,14 @@ public:
             }
 
             if ((i >= nBurnin) && (i % thinning) == 0) {
-                if (i < nAdjust) 
+                if (i < nAdjust)
                     loglikes.push_back(target->logprobability(Float(i)/nAdjust));
                 else
                     loglikes.push_back(target->logprobability(Float(i-nAdjust)/nSamples));
 
                 ics.push_back(target->state->getInitialConditions());
 
-                if (writeSamplesToDisk) { 
+                if (writeSamplesToDisk) {
                     auto data = target->state->get_all();
 
                     file << "weight " << 1/target->state->weight << " loglike " << target->state->loglikelihood() << "\n";
@@ -1043,21 +1043,21 @@ public:
                     file << "\n";
                 }
                 if (recordSamples)
-                    samples.push_back(std::make_shared<State>(*(target->state))); 
+                    samples.push_back(std::make_shared<State>(*(target->state)));
             }
 
             if ((i > nBurnin) && computeMean)
                 mean->addCoordsOf(target->state);
 
-            //if (!recordSamples) { [> noticed slowdown almost 2x when *not* saving samples. This seems to 
-                                     //be due to many immediate deletes of subspace states when share_ptrs go 
-                                     //out of scope. Avoid this by collecting some and deleting them at once. 
+            //if (!recordSamples) { [> noticed slowdown almost 2x when *not* saving samples. This seems to
+                                     //be due to many immediate deletes of subspace states when share_ptrs go
+                                     //out of scope. Avoid this by collecting some and deleting them at once.
                                      //On my system (Mac Catalina) this resolved the issue. Update: may not resolve the issue for small enough nGarbage
-                                     //that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/ 
+                                     //that it actually deletes. Usually this is needed to save memory, which is the whole point of not recording samples...*/
                 //static std::vector<std::shared_ptr<State>> garbage;
                 //const int nGarbage = 50;
                 //static int curr = 0;
-                //if (curr < nGarbage) 
+                //if (curr < nGarbage)
                     //garbage.push_back(std::make_shared<State>(*(target->state)));
                 //else if (curr == nGarbage) {
                     //curr = -1;
@@ -1067,16 +1067,16 @@ public:
             //}
             if (i < nAdjust) {
 
-                if (adjustbar < int(nBar*Float(i)/nAdjust)) { 
+                if (adjustbar < int(nBar*Float(i)/nAdjust)) {
                     std::cout << "#" << std::flush;
                     ++adjustbar;
                 }
 
                 nAccept = 0;
-                if (!target->step(rnd, rec, Float(i)/nAdjust, true, nAccept)) 
-                    return; 
+                if (!target->step(rnd, rec, Float(i)/nAdjust, true, nAccept))
+                    return;
                 //if (!singleStep(rec, nAccept, true))
-                    //return; 
+                    //return;
 
                 int nRepeat = 20;
                 if (verbose)
@@ -1089,10 +1089,10 @@ public:
                     //std::cout << rec.deltaloglike <<" (" << target->state->loglikelihood() << ")\n";
                 }
 
-                Float acceptRate = Float(nAccept)/nRepeat; 
+                Float acceptRate = Float(nAccept)/nRepeat;
 
                 /* maps 0.234 to 1, 0+ to zero and 1 to 2, smoothly */
-                auto rate2corr = [](Float x) { 
+                auto rate2corr = [](Float x) {
                     return (1+0.726484*x*x*x*x)/(0.82051 + 0.0427315/(x+0.0001));
                 };
 
@@ -1104,11 +1104,10 @@ public:
             }
             else {
 
-                if (progressbar < int(nBar*Float(std::max(0, i-nAdjust))/nSamples)) { 
+                if (progressbar < int(nBar*Float(std::max(0, i-nAdjust))/nSamples)) {
                     std::cout << "#" << std::flush;
                     ++progressbar;
                 }
-                
                 target->step(rnd, rec, Float(i-nAdjust)/nSamples, true, nAccept);
             }
 
@@ -1116,7 +1115,7 @@ public:
         }
         STOP_TIMER;
 
-        if (computeMean) 
+        if (computeMean)
             mean->multCoordsBy(Float(1)/(nAdjust+nSamples-nBurnin));
 
         std::cout << "\n\nChain " << id << " finished, acceptance rate was " << Float(nAccept)/(nBurnin+nSamples) << ".\n";
@@ -1130,7 +1129,7 @@ public:
             std::cout << "Re-evaluation of chain " << id << " is not requested to record samples in chain nor write them to disk. Aborting.\n";
             return;
         }
-        if (ics.size() == 0) { 
+        if (ics.size() == 0) {
             std::cout << "Re-evaluation of chain " << id << " impossible: No initial conditions have been recorded.\n";
             return;
         }
@@ -1138,16 +1137,16 @@ public:
             std::cout << "Re-evaluation of chain " << id << " despite saved samples. Overwriting... \n";
             samples = {};
         }
-        if (nBurnin >= ics.size()) { 
+        if (nBurnin >= ics.size()) {
             std::cout << "Requested re-evaluation with burnin as big as original run or bigger. Aborting.\n";
             return;
         }
-       
+
         std::vector<decltype(ics)::value_type>(ics.begin()+nBurnin, ics.end()).swap(ics);
         std::vector<decltype(loglikes)::value_type>(loglikes.begin()+nBurnin, loglikes.end()).swap(loglikes);
 
         if (writeSamplesToDisk) {
-            std::stringstream filename; 
+            std::stringstream filename;
             filename << "samples" << id << ".txt";
             std::ofstream file(filename.str());
             file << "chainweight = " << weight << "\n\n";
@@ -1170,53 +1169,53 @@ public:
                 file << "\n";
 
                 if (recordSamples) /* here we cannot rely on copies being made of the changed subspacestates due to chain stepping - need to copy right here */
-                    samples.push_back(target->state->deep_copy()); 
+                    samples.push_back(target->state->deep_copy());
             }
         }
-        else {  /* recordSamples is true if writeSamplesToDisk is false, because of previous test*/ 
+        else {  /* recordSamples is true if writeSamplesToDisk is false, because of previous test*/
             for (size_t i = 0; i < ics.size(); ++i) {
                 evalstate->setInitialConditions(ics[i]);
                 target->set_posterior(evalstate);
 
                 /* here we cannot rely on copies being made of the changed subspacestates due to chain stepping - need to copy right here */
-                samples.push_back(target->state->deep_copy()); 
+                samples.push_back(target->state->deep_copy());
             }
         }
     }
 
-    /* using the independent sample coords encoded in the ics of a chain, carry out an online 1 pass algorithm to update the covariance and mean. 
+    /* using the independent sample coords encoded in the ics of a chain, carry out an online 1 pass algorithm to update the covariance and mean.
      * n is the number of samples that have been previously used here. more precisely, it is the sum of previous chain weights, which are frequency wwights. Note that we do not tak into account
      * the target weights (which would be reliability weights) since we are not interested in the true covaraince of the unweighted distribution but really in the covaraince of the points the chain is producing,
      * to enable better (decorrelated, scaled)  proposals*/
-    void update_covariance(Eigen::MatrixXd& cov, Eigen::VectorXd& mu, int& n,  std::shared_ptr<State> evalstate, int nBurnin) {
-        
-        else if (ics.size() == 0) { 
-            std::cout << "Impossilbe to update covariance from chain " << id << ". No points available. Run the chain(s) first! \n";
-            return;
-        }
-        if (nBurnin >= ics.size()) { 
-            std::cout << "Requested covariance update with burnin larger than number of stored points. Aborting.\n";
-            return;
-        }
-
-        cov *= (n-1);
-        Eigen::VectorXd x(evalstate.dim), dx(evalstate.dim);
-        for (size_t i = burnin; i < ics.size(); ++i) {
-            int idx = 0;
-            for (size_t j = 0; j < ics[i].size(); ++j) {
-                for (size_t k = 0; k < ics[i][j].size(); ++k) {
-                    x(idx) = ics[i][j][k];
-                    ++idx;
-                }
-            }
-            n += weight; 
-            dx = x - mu;
-            mu += weight/Float(n)*dx;
-            cov += weight*dx*(x-mu).transpose();
-        }
-
-        cov /= (n-1);
-    }
+    // void update_covariance(Eigen::MatrixXd& cov, Eigen::VectorXd& mu, int& n,  std::shared_ptr<State> evalstate, int nBurnin)
+    //
+    //     else if (ics.size() == 0) {
+    //         std::cout << "Impossilbe to update covariance from chain " << id << ". No points available. Run the chain(s) first! \n";
+    //         return;
+    //     }
+    //     if (nBurnin >= ics.size()) {
+    //         std::cout << "Requested covariance update with burnin larger than number of stored points. Aborting.\n";
+    //         return;
+    //     }
+    //
+    //     cov *= (n-1);
+    //     Eigen::VectorXd x(evalstate.dim), dx(evalstate.dim);
+    //     for (size_t i = burnin; i < ics.size(); ++i) {
+    //         int idx = 0;
+    //         for (size_t j = 0; j < ics[i].size(); ++j) {
+    //             for (size_t k = 0; k < ics[i][j].size(); ++k) {
+    //                 x(idx) = ics[i][j][k];
+    //                 ++idx;
+    //             }
+    //         }
+    //         n += weight;
+    //         dx = x - mu;
+    //         mu += weight/Float(n)*dx;
+    //         cov += weight*dx*(x-mu).transpose();
+    //     }
+    //
+    //     cov /= (n-1);
+    // }
 #if PY == 1
 
     py::array_t<Float> get_mean(const std::string& coordName) {
@@ -1224,29 +1223,28 @@ public:
         if (!computeMean)
             std::cout << "Requested mean, but MetropolisChain::computeMean is false\n";
 
-        auto data = mean->getCoords(coordName); 
+        auto data = mean->getCoords(coordName);
 
         py::array_t<Float> ret(data.size());
-            
+
         std::memcpy(ret.mutable_data(), &(data[0]), sizeof(Float)*data.size());
 
         return ret;
     }
     py::array_t<Float> get_samples(const std::string& coordName) {
 
-        if (samples.size() == 0) { 
+        if (samples.size() == 0) {
             std::cout << "Requested samples, but none are present\n";
             return {};
         }
-    
-        auto data0 = samples[0]->getCoords(coordName); 
+        auto data0 = samples[0]->getCoords(coordName);
 
         py::array_t<Float> ret({/*times number of chains */samples.size(), data0.size()});
 
-        for (size_t i = 0; i < samples.size(); ++i)  { 
-            
+        for (size_t i = 0; i < samples.size(); ++i)  {
+
             int idx = data0.size() * (0*id*samples.size() + i);
-            auto data = samples[i]->getCoords(coordName); 
+            auto data = samples[i]->getCoords(coordName);
             std::memcpy(&(ret.mutable_data()[idx]), &(data[0]), sizeof(Float)*data0.size());
 
         }
@@ -1256,32 +1254,31 @@ public:
 
     py::array_t<Float> get_weights() {
 
-        if (samples.size() == 0) { 
+        if (samples.size() == 0) {
             std::cout << "Requested weights, but none are present\n";
             return {};
         }
-    
         py::array_t<Float> ret(/*times number of chains */samples.size());
 
-        for (size_t i = 0; i < samples.size(); ++i)  { 
-            
+        for (size_t i = 0; i < samples.size(); ++i)  {
+
             ret.mutable_data()[i] = 1/samples[i]->weight;
         }
 
         return ret;
     }
-    
+
     py::array_t<Float> get_loglikes() {
 
-        if (loglikes.size() == 0) { 
+        if (loglikes.size() == 0) {
             std::cout << "Requested loglikes, but none are present\n";
             return {};
         }
-    
+
         py::array_t<Float> ret(/*times number of chains */loglikes.size());
 
-        for (size_t i = 0; i < loglikes.size(); ++i)  { 
-            
+        for (size_t i = 0; i < loglikes.size(); ++i)  {
+
             ret.mutable_data()[i] = loglikes[i];
         }
 
@@ -1299,8 +1296,8 @@ protected:
 
 };
 
-template<class ChainType> 
-class ChainManager  { 
+template<class ChainType>
+class ChainManager  {
 public:
     ChainManager(std::shared_ptr<Target> target, size_t nChain) : target(target), nChain(nChain), stepsizes{}, chains{}, chainICs{}  {
 
@@ -1553,7 +1550,7 @@ public:
     }
 
     auto get_all_chains() {
-        if (chains.size() == 0) {   
+        if (chains.size() == 0) {
             std::cout << "ChainManager::get_all_chains: Requested chains of the manager, but no valid chain is present. call ChainManager::run_chains first!\n";
         }
         return chains;
@@ -1584,7 +1581,7 @@ public:
     }
 protected:
 
-    void bootstrap(pcg32& rnd, std::vector< std::pair<std::vector<std::vector<Float>>, Float> >& trialChainICs) { 
+    void bootstrap(pcg32& rnd, std::vector< std::pair<std::vector<std::vector<Float>>, Float> >& trialChainICs) {
         /*the corresponding discrete CDF as a float array*/
         std::vector<double> discreteCDF;
         double total = 0.0;
@@ -1891,18 +1888,17 @@ private:
 };
 
 class SumConstraint {
-public: 
+public:
 
-    Float constraint; 
+    Float constraint;
     std::vector<Float>* vals;
 
-    SumConstraint(Float constraint) : constraint(constraint) {} 
+    SumConstraint(Float constraint) : constraint(constraint) {}
 
-    void link(std::vector<Float>* dataptr) { 
+    void link(std::vector<Float>* dataptr) {
 
         vals = dataptr;
-   
-        /* check constraint */ 
+        /* check constraint */
         Float sum = 0;
         for (auto f : (*vals)) {
             sum += f;
@@ -1917,11 +1913,11 @@ public:
 
     void step(pcg32& rnd, Float stepsize, int& from, int& to, Float& val, Float& volRatio) {
 
-        do { 
+        do {
             from = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
             to   = std::min(size_t(rnd.nextFloat()*vals->size()), vals->size()-1);
             val  = stepsize*rnd.nextFloat();
-        } 
+        }
         while ( !moveMass(from, to, val) );
 
         Float newVol = accessibleStateVol(stepsize);
@@ -1929,9 +1925,9 @@ public:
 
         volRatio = oldVol / newVol;
     }
-private: 
+private:
 
-    bool moveMass(int from, int to, Float val) { 
+    bool moveMass(int from, int to, Float val) {
 
         if (from == to) return false;
 
@@ -1943,9 +1939,9 @@ private:
         return true;
     }
 
-    Float accessibleStateVol(Float stepsize) const { 
+    Float accessibleStateVol(Float stepsize) const {
         Float ret = 0;
-        for (auto f : (*vals)) 
+        for (auto f : (*vals))
             ret += std::min(f, stepsize);
         return ret;
     }

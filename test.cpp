@@ -22,7 +22,7 @@ namespace py = pybind11;
 #endif
 
 
-#if PY == 0 
+#if PY == 0
 
 int main() {
 
@@ -41,11 +41,15 @@ int main() {
 
 #endif
 
-#if PY == 1 
+#if PY == 1
 
 PYBIND11_MODULE(mcmc, m) {
+    m.def("keelin", &keelin_pdf<Float, Float>, "keelin 4 terms");
+    m.def("keelin_Q", &keelin_Q<Float, Float>, "keelin 4 terms");
     py::class_<SubspaceState, std::shared_ptr<SubspaceState>>(m, "SubspaceState")
-        .def("get_names", &SubspaceState::get_names);
+        .def("get_names", &SubspaceState::get_names)
+        .def("setCoords", &SubspaceState::setCoords)
+        .def("getCoords", &SubspaceState::getCoordsAt);
         //.def(py::init<std::map<std::string, int>>());
     py::class_<A, SubspaceState, std::shared_ptr<A>>(m, "A")
         .def(py::init<>());
@@ -89,12 +93,14 @@ PYBIND11_MODULE(mcmc, m) {
         .def_readwrite("minOscillations", &AdvCoolingTarget::minOscillations)
         .def_readwrite("defaultHeatCapacity", &AdvCoolingTarget::defaultHeatCapacity);
     py::class_<ProbabilityDistributionSamples>(m, "ProbabilityDistributionSamples")
-        .def(py::init<py::array_t<Float>, py::array_t<Float>>());
+        .def(py::init<py::array_t<Float>, py::array_t<Float>, bool>());
     py::class_<PiecewiseConstantPDF, SubspaceState, std::shared_ptr<PiecewiseConstantPDF>>(m, "PiecewiseConstantPDF")
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, int>());
     py::class_<GaussianMixturePDF, SubspaceState, std::shared_ptr<GaussianMixturePDF>>(m, "GaussianMixturePDF")
         .def(py::init<const std::string&, const std::string&, Float, Float, size_t>())
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, size_t>());
+    py::class_<KeelinPDF, SubspaceState, std::shared_ptr<KeelinPDF>>(m, "KeelinPDF")
+        .def(py::init<const ProbabilityDistributionSamples&, int>());
     py::class_<MetropolisChain, std::shared_ptr<MetropolisChain>>(m, "Chain")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<Target>, int>())
