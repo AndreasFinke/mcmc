@@ -101,6 +101,10 @@ PYBIND11_MODULE(mcmc, m) {
         .def(py::init<const ProbabilityDistributionSamples&, Float, Float, size_t>());
     py::class_<KeelinPDF, SubspaceState, std::shared_ptr<KeelinPDF>>(m, "KeelinPDF")
         .def(py::init<const ProbabilityDistributionSamples&, int>());
+    py::class_<GaussKeelinMixturePDF, SubspaceState, std::shared_ptr<GaussKeelinMixturePDF>>(m, "GaussKeelinMixturePDF")
+        .def(py::init<const ProbabilityDistributionSamples&, size_t, int>())
+        .def("get_initial_conditions", &GaussKeelinMixturePDF::getInitialConditions)
+        .def("set_initial_conditions", &GaussKeelinMixturePDF::setInitialConditions);
     py::class_<MetropolisChain, std::shared_ptr<MetropolisChain>>(m, "Chain")
         //.def(py::init<py::array_t<double>, py::array_t<double>, int>())
         .def(py::init<std::shared_ptr<Target>, int>())

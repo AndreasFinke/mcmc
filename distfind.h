@@ -381,7 +381,7 @@ template<typename T, typename T2>
 T keelin_CDF(const T& x, const std::vector<T2>& a) {
     T high(1-1e-8);
     T low (1e-8);
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 20; ++i) {
         T mid = (high+low)*Float(0.5);
         T Qshifted = keelin_Q(mid, a) - x;
         enoki::masked(high, Qshifted>0) = mid;
@@ -393,6 +393,14 @@ T keelin_CDF(const T& x, const std::vector<T2>& a) {
 template<typename T, typename T2>
 T keelin_pdf(const T& x, const std::vector<T2>& a) {
     T y = keelin_CDF(x, a);
+    T y1 = 1/(y*(1-y));
+    T y5 = y - Float(0.5);
+    T g = enoki::log(y/(1-y));
+    T ret = 1/(a[1]*y1 + a[2]*(y5*y1 + g) + a[3] + a[4]*2*y5 + a[5]*(y5*y5*y1 + 2*y5*g) + a[6]*3*y5*y5 + a[7]*(y5*y5*y5*y1 + 3*y5*y5*g) + a[8]*4*y5*y5*y5 + a[9]*(y5*y5*y5*y5*y1 + 4*y5*y5*y5*g));
+    return ret;
+}
+template<typename T, typename T2>
+T keelin_pdf_of_y(const T& y, const std::vector<T2>& a) {
     T y1 = 1/(y*(1-y));
     T y5 = y - Float(0.5);
     T g = enoki::log(y/(1-y));
@@ -421,7 +429,7 @@ class KeelinPDF : public SubspaceState {
             FloatP foo = enoki::packet(data->y, i) - mean;
             varP += foo*foo;
         }
-        var = enoki::hsum(varP)/N;
+        var = enoki::hsum(varP)/(N-1);
 
         std = std::sqrt(var);
     }
@@ -1003,7 +1011,7 @@ a4*a4*a4*a4*a4*a4/448. + (3*a2*a2*a3*a3*a3*a5)/4. + \
         /* variance of empirical mean */
         Float w = var/N;
         std::cout << w << "\t";
-        Float t1 = (m1-mean)*(m1-mean)/w/4;
+        Float t1 = Float(0.5)*(m1-mean)*(m1-mean)/w;
 
         /* variance of empirical variance - estimated as var^2 / N */
         w *= var;
@@ -1101,7 +1109,7 @@ a4*a4*a4*a4*a4*a4/448. + (3*a2*a2*a3*a3*a3*a5)/4. + \
             int idx = std::min(int(rnd.nextFloat()*nTerms), nTerms-1);
             int idx2 = std::min(int(rnd.nextFloat()*2), 1);
 
-            newstate->coords[idx2][idx] += (rnd.nextFloat()-0.5)*std*std::min(stepsizeCorrectionFac, Float(1));
+            newstate->coords[idx2][idx] += (rnd.nextFloat()-0.5)*std/std::sqrt(N)*std::min(stepsizeCorrectionFac, Float(1));
         }
 
                         // bound(newstate->coords[2][whichMode], minSigma, maxSigma);
@@ -1121,3 +1129,584 @@ private:
 
 };
 #endif
+
+
+
+class GaussKeelinMixturePDF : public SubspaceState {
+
+private:
+
+    SumConstraint constraintAmplitudes;
+
+    Float std, var;
+    Float mean;
+
+    int nTerms = 5;
+
+    size_t N = 0;
+
+    void empiricalMeanStd() {
+        FloatP meanP{0};
+        for (size_t i = 0; i < enoki::packets(data->y); ++i) {
+            meanP += enoki::packet(data->y, i);
+        }
+        mean = enoki::hsum(meanP)/N;
+
+        FloatP varP{0};
+        for (size_t i = 0; i < enoki::packets(data->y); ++i) {
+            FloatP foo = enoki::packet(data->y, i) - mean;
+            varP += foo*foo;
+        }
+        var = enoki::hsum(varP)/(N-1);
+
+        std = std::sqrt(var);
+    }
+
+    size_t nModes;
+    Float minSigma;
+    Float maxSigma;
+    const int pdfRes = 1000;
+public:
+
+
+    GaussKeelinMixturePDF(const ProbabilityDistributionSamples& data, size_t nModes, int nTerms) :
+        SubspaceState({"A", "mu", "sig", "a", "pdfX", "pdfY", "cdf", "m1", "nNonzeroModes"}, 5, false), constraintAmplitudes(1), nModes(nModes), nTerms(nTerms), data(&data) {
+
+            N = enoki::slices(data.y);
+            empiricalMeanStd();
+
+            minSigma = std/50;
+            maxSigma = std/3;
+
+            setCoords({std::vector<Float>(nModes + 1, Float(1)/(nModes+1)),
+                        std::vector<Float>(nModes, 0),
+                         std::vector<Float>(nModes, std/std::max(size_t(5), nModes)),
+                         std::vector<Float>{mean*5/6, std, mean/6, -3*std, 0,0,0,0,0,0},
+                         std::vector<Float>(pdfRes, 0),
+                         std::vector<Float>(pdfRes, 0),
+                         std::vector<Float>(pdfRes, 0),
+                         std::vector<Float>(1,Float(0)),
+                         std::vector<Float>(1,Float(nModes))
+                });
+
+            for (size_t i = 0; i < nModes; ++i)
+                coords[1][i] = mean-3*std + (i+0.5)*(6*std)/(nModes);
+
+            constraintAmplitudes.link(&coords[0]);
+
+            // for (auto foo : coords) {
+            //     for (auto bar : foo)
+            //         std::cout << bar << " " ;
+            //     std::cout << "\n";
+            // }
+
+    }
+
+    std::vector<Float> getInitialConditions() override {
+        std::vector<Float> ret{};
+        for (size_t i = 0; i < nModes+1; ++i)
+            ret.push_back(coords[0][i]);
+        for (size_t i = 0; i < nModes; ++i)
+            ret.push_back(coords[1][i]);
+        for (size_t i = 0; i < nModes; ++i)
+            ret.push_back(coords[2][i]);
+        for (size_t i = 0; i < 10; ++i)
+            ret.push_back(coords[3][i]);
+
+        return ret;
+    }
+
+    void setInitialConditions(const std::vector<Float>& ics) override {
+        for (size_t i = 0; i < nModes+1; ++i)
+            coords[0][i] = ics[i];
+        for (size_t i = 0; i < nModes; ++i)
+            coords[1][i] = ics[nModes+1+i];
+        for (size_t i = 0; i < nModes; ++i)
+            coords[2][i] = ics[2*nModes+1+i];
+        for (size_t i = 0; i < 10; ++i)
+            coords[3][i] = ics[3*nModes+1+i];
+    }
+
+    void compute_derived_late(const SharedParams& shared) override {
+        static constexpr auto pi = std::acos(-1);
+
+        coords[8][0] = 0;
+        for (size_t i = 0; i < nModes+1; ++i)
+            if (coords[0][i] > 0.02)
+                coords[8][0] += 1;
+
+        Float eps = 1e-5;
+        Float dy = (1-2*eps)/(pdfRes-1);
+        Float y = eps;
+
+        for (int i = 0; i < pdfRes; ++i) {
+            coords[4][i] = keelin_Q(y, coords[3]);
+            coords[5][i] = coords[0][nModes]*keelin_pdf_of_y(y, coords[3]);
+            coords[6][i] = coords[0][nModes]*y;
+            for (int m = 0; m < nModes; ++m) {
+                Float arg = coords[4][i] - coords[1][m];
+                Float var = coords[2][m]*coords[2][m];
+                coords[5][i] += coords[0][m]/(enoki::sqrt(2*pi*var))*enoki::exp(-arg*arg/(2*var));
+                coords[6][i] += coords[0][m]*Float(0.5)*(1+enoki::erf(arg/(std::sqrt(Float(2.0))*coords[2][m])));
+            }
+            y += dy;
+        }
+
+    }
+
+    void eval(const SharedParams& shared) override {
+
+        static constexpr auto pi = std::acos(-1);
+
+        FloatP loglikeP(0);
+
+        /* better safe than sorry */
+        for (size_t j = nTerms; j < 10; ++j)
+            coords[3][j] = 0;
+
+        Float pi2 = pi*pi;
+        Float pi4 = pi2*pi2;
+        Float pi6 = pi2*pi4;
+
+        Float a1 = coords[3][0];
+        Float a2 = coords[3][1];
+        Float a3 = coords[3][2];
+        Float a4 = coords[3][3];
+        Float a5 = coords[3][4];
+        Float a6 = coords[3][5];
+        Float a7 = coords[3][6];
+        Float a8 = coords[3][7];
+
+        empiricalMeanStd();
+
+        for (size_t i = 0; i < enoki::packets(data->y); ++i) {
+
+            FloatP p_i(0);
+            FloatP x   = enoki::packet(data->y, i);
+
+            for (size_t m = 0; m < nModes; ++m) {
+                /* do not support sample error now */
+                // FloatP var = enoki::packet(data->sig, i);
+                FloatP var{0};
+                FloatP arg = x - coords[1][m];
+                // var *= var;
+                var += coords[2][m]*coords[2][m];
+                p_i += coords[0][m]/(enoki::sqrt(2*pi*var))*enoki::exp(-arg*arg/(2*var));
+            }
+
+            std::vector<FloatP> a{coords[3][0], coords[3][1], coords[3][2], coords[3][3], coords[3][4], coords[3][5], coords[3][6], coords[3][7], coords[3][8], coords[3][9]};
+            // for (size_t j = 0; j<nTerms; ++j) {
+                // a[j] += enoki::packet(data->sig, i)*coords[4][j];
+            // }\
+
+            FloatP p_i_keelin = coords[0][nModes]*keelin_pdf(x, a);
+
+            p_i += p_i_keelin;
+            p_i[p_i_keelin <= 0] = 1e-80; // unfeasible coefficients "a" manifest like so
+            p_i[p_i_keelin > 1e3/std] = 1e-8; // no unfeasible but too weird
+
+            loglikeP += enoki::log(p_i);
+        };
+
+        loglike = enoki::hsum(loglikeP);
+
+        /* keelin prior */
+
+
+        Float m1 = coords[0][nModes]*(a1 + a3/2. + a5/12. + a8/12.);
+        for (size_t m = 0; m < nModes; ++m) {
+            m1 += coords[0][m]*coords[1][m];
+        }
+
+        coords[7][0] = m1;
+
+        /* here we also compute the second central moment including the gaussians, so first of all we use the above m1 to define the center, and recompute the keelin expression for that (note it is not anymore all 2nd order in a) */
+
+        Float m2 = a1*a1 + a1*a3 + a3*a3/3. + a2*a4 + a4*a4/12. + (a1*a5)/6. + (a3*a5)/6. + a5*a5/80. + (2*a2*a6)/3. + (a4*a6)/6. + a6*a6/12. - \
+                    2*a1*m1 - a3*m1 - (a5*m1)/6. + m1*m1 + (a2*a2*pi2)/3. + (a3*a3*pi2)/36. + (a2*a6*pi2)/18. + (a6*a6*pi2)/240.;
+
+        /* still need to include the variance caused by the gaussians. Again the center of the moment is m1, but the position of the gaussian is coords[1][m] -
+         * a computation shows that the result is the sum of the squared difference of the two and the variance. everything is of course weighted by the cofficents A in coords[0] */
+
+        m2 *= coords[0][nModes];
+        for (size_t m = 0; m < nModes; ++m) {
+            m2 += coords[0][m]*( (coords[1][m]-m1)*(coords[1][m]-m1) + coords[2][m]*coords[2][m] );
+        }
+
+
+        /* for the rest, we keep the old keelin - only expressions. The goal is to constrain the Keelin part into something nice enough so that it is feasible. The gaussian part can do whatever it wants here, we do not need to  constrain it. We need to include it only in first and second moment, for which we try to fit the empirical ones with the total distribution. */
+
+        Float m3 = (a2*a3*a4)/2. + (a3*a4*a4)/8. + a2*a2*a5 + (a3*a3*a5)/24. + \
+(a2*a4*a5)/4. + (a4*a4*a5)/60. + (a3*a5*a5)/120. + a5*a5*a5/3780. + \
+(a2*a3*a6)/2. + (a3*a4*a6)/4. + (a2*a5*a6)/3. + (13*a4*a5*a6)/240. + \
+(a3*a6*a6)/8. + (3*a5*a6*a6)/80. + a2*a2*a3*pi2 + (a3*a3*a3*pi2)/24. \
++ (a2*a3*a4*pi2)/6. + (a3*a3*a5*pi2)/180. + (5*a2*a3*a6*pi2)/12. + \
+(a3*a4*a6*pi2)/40. + (a2*a5*a6*pi2)/90. + (a3*a6*a6*pi2)/24. + \
+(a5*a6*a6*pi2)/840.;
+
+
+    Float m4 = a3*a3*a3*a3/80. + (a2*a3*a3*a4)/2. + 2*a2*a2*a4*a4 + \
+(a3*a3*a4*a4)/8. + (a2*a4*a4*a4)/3. + a4*a4*a4*a4/80. + a2*a2*a3*a5 + \
+(a3*a3*a3*a5)/24. + (5*a2*a3*a4*a5)/6. + (3*a3*a4*a4*a5)/40. + \
+(a2*a2*a5*a5)/6. + (a3*a3*a5*a5)/45. + (a2*a4*a5*a5)/15. + \
+(11*a4*a4*a5*a5)/2520. + (a3*a5*a5*a5)/420. + a5*a5*a5*a5/15120. + \
+(2*a2*a3*a3*a6)/5. + 3*a2*a2*a4*a6 + (a3*a3*a4*a6)/4. + a2*a4*a4*a6 + \
+(23*a4*a4*a4*a6)/360. + (5*a2*a3*a5*a6)/6. + (23*a3*a4*a5*a6)/120. + \
+(17*a2*a5*a5*a6)/180. + (a4*a5*a5*a6)/70. + (6*a2*a2*a6*a6)/5. + \
+(a3*a3*a6*a6)/8. + a2*a4*a6*a6 + (7*a4*a4*a6*a6)/60. + \
+(7*a3*a5*a6*a6)/60. + (67*a5*a5*a6*a6)/6048. + (a2*a6*a6*a6)/3. + \
+(11*a4*a6*a6*a6)/120. + (19*a6*a6*a6*a6)/720. + \
+(3*a2*a2*a3*a3*pi2)/2. + (a3*a3*a3*a3*pi2)/24. + 2*a2*a2*a2*a4*pi2 + \
+(2*a2*a3*a3*a4*pi2)/3. + (a2*a2*a4*a4*pi2)/6. + (a3*a3*a4*a4*pi2)/40. \
++ (a2*a2*a3*a5*pi2)/2. + (a3*a3*a3*a5*pi2)/40. + \
+(2*a2*a3*a4*a5*pi2)/45. + (a2*a2*a5*a5*pi2)/90. + \
+(11*a3*a3*a5*a5*pi2)/7560. + (8*a2*a2*a2*a6*pi2)/3. + \
+(13*a2*a3*a3*a6*pi2)/12. + a2*a2*a4*a6*pi2 + \
+(17*a3*a3*a4*a6*pi2)/120. + (a2*a4*a4*a6*pi2)/20. + \
+(7*a2*a3*a5*a6*pi2)/36. + (a3*a4*a5*a6*pi2)/105. + \
+(11*a2*a5*a5*a6*pi2)/3780. + a2*a2*a6*a6*pi2 + \
+(23*a3*a3*a6*a6*pi2)/160. + (23*a2*a4*a6*a6*pi2)/120. + \
+(a4*a4*a6*a6*pi2)/224. + (211*a3*a5*a6*a6*pi2)/10080. + \
+(a5*a5*a6*a6*pi2)/3360. + (7*a2*a6*a6*a6*pi2)/45. + \
+(11*a4*a6*a6*a6*pi2)/840. + (409*a6*a6*a6*a6*pi2)/45360. + \
+(7*a2*a2*a2*a2*pi4)/15. + (7*a2*a2*a3*a3*pi4)/30. + \
+(7*a3*a3*a3*a3*pi4)/1200. + (7*a2*a2*a2*a6*pi4)/45. + \
+(7*a2*a3*a3*a6*pi4)/100. + (7*a2*a2*a6*a6*pi4)/200. + \
+(a3*a3*a6*a6*pi4)/160. + (a2*a6*a6*a6*pi4)/240. + \
+(7*a6*a6*a6*a6*pi4)/34560.;
+
+    Float m5 = (a2*a3*a3*a3*a4)/4. + (5*a2*a2*a3*a4*a4)/2. + (5*a3*a3*a3*a4*a4)/48. \
++ (5*a2*a3*a4*a4*a4)/6. + (7*a3*a4*a4*a4*a4)/144. + a2*a2*a3*a3*a5 + \
+(a3*a3*a3*a3*a5)/48. + 5*a2*a2*a2*a4*a5 + (25*a2*a3*a3*a4*a5)/24. + \
+(5*a2*a2*a4*a4*a5)/3. + (7*a3*a3*a4*a4*a5)/48. + \
+(13*a2*a4*a4*a4*a5)/72. + (a4*a4*a4*a4*a5)/168. + \
+(5*a2*a2*a3*a5*a5)/6. + (7*a3*a3*a3*a5*a5)/288. + \
+(11*a2*a3*a4*a5*a5)/36. + (25*a3*a4*a4*a5*a5)/1008. + \
+(a2*a2*a5*a5*a5)/18. + (a3*a3*a5*a5*a5)/189. + \
+(11*a2*a4*a5*a5*a5)/756. + (a4*a4*a5*a5*a5)/1134. + \
+(a3*a5*a5*a5*a5)/2835. + a5*a5*a5*a5*a5/149688. + (a2*a3*a3*a3*a6)/4. \
++ (9*a2*a2*a3*a4*a6)/2. + (5*a3*a3*a3*a4*a6)/24. + \
+(5*a2*a3*a4*a4*a6)/2. + (11*a3*a4*a4*a4*a6)/48. + 4*a2*a2*a2*a5*a6 + \
+(13*a2*a3*a3*a5*a6)/12. + (15*a2*a2*a4*a5*a6)/4. + \
+(11*a3*a3*a4*a5*a6)/32. + (3*a2*a4*a4*a5*a6)/4. + \
+(235*a4*a4*a4*a5*a6)/6048. + (59*a2*a3*a5*a5*a6)/144. + \
+(227*a3*a4*a5*a5*a6)/3024. + (a2*a5*a5*a5*a6)/42. + \
+(149*a4*a5*a5*a5*a6)/45360. + 2*a2*a2*a3*a6*a6 + \
+(5*a3*a3*a3*a6*a6)/48. + (5*a2*a3*a4*a6*a6)/2. + \
+(19*a3*a4*a4*a6*a6)/48. + 2*a2*a2*a5*a6*a6 + (19*a3*a3*a5*a6*a6)/96. \
++ (23*a2*a4*a5*a6*a6)/24. + (131*a4*a4*a5*a6*a6)/1512. + \
+(643*a3*a5*a5*a6*a6)/12096. + (253*a5*a5*a5*a6*a6)/90720. + \
+(5*a2*a3*a6*a6*a6)/6. + (43*a3*a4*a6*a6*a6)/144. + \
+(7*a2*a5*a6*a6*a6)/18. + (487*a4*a5*a6*a6*a6)/6048. + \
+(a3*a6*a6*a6*a6)/12. + (3*a5*a6*a6*a6*a6)/112. + \
+(5*a2*a2*a3*a3*a3*pi2)/3. + (5*a3*a3*a3*a3*a3*pi2)/144. + \
+(25*a2*a2*a2*a3*a4*pi2)/3. + (5*a2*a3*a3*a3*a4*pi2)/4. + \
+(25*a2*a2*a3*a4*a4*pi2)/12. + (7*a3*a3*a3*a4*a4*pi2)/72. + \
+(a2*a3*a4*a4*a4*pi2)/12. + (10*a2*a2*a2*a2*a5*pi2)/3. + \
+(25*a2*a2*a3*a3*a5*pi2)/12. + (7*a3*a3*a3*a3*a5*pi2)/144. + \
+(5*a2*a2*a2*a4*a5*pi2)/6. + (31*a2*a3*a3*a4*a5*pi2)/72. + \
+(a2*a2*a4*a4*a5*pi2)/18. + (a3*a3*a4*a4*a5*pi2)/84. + \
+(5*a2*a2*a3*a5*a5*pi2)/36. + (25*a3*a3*a3*a5*a5*pi2)/3024. + \
+(11*a2*a3*a4*a5*a5*pi2)/756. + (a2*a2*a5*a5*a5*pi2)/1134. + \
+(a3*a3*a5*a5*a5*pi2)/3402. + 10*a2*a2*a2*a3*a6*pi2 + \
+(125*a2*a3*a3*a3*a6*pi2)/72. + (15*a2*a2*a3*a4*a6*pi2)/2. + \
+(13*a3*a3*a3*a4*a6*pi2)/36. + (5*a2*a3*a4*a4*a6*pi2)/6. + \
+(5*a3*a4*a4*a4*a6*pi2)/336. + (20*a2*a2*a2*a5*a6*pi2)/9. + \
+(71*a2*a3*a3*a5*a6*pi2)/72. + (13*a2*a2*a4*a5*a6*pi2)/24. + \
+(187*a3*a3*a4*a5*a6*pi2)/2016. + (a2*a4*a4*a5*a6*pi2)/42. + \
+(97*a2*a3*a5*a5*a6*pi2)/1512. + (a3*a4*a5*a5*a6*pi2)/336. + \
+(a2*a5*a5*a5*a6*pi2)/1701. + (35*a2*a2*a3*a6*a6*pi2)/6. + \
+(85*a3*a3*a3*a6*a6*pi2)/288. + (89*a2*a3*a4*a6*a6*pi2)/48. + \
+(39*a3*a4*a4*a6*a6*pi2)/448. + (3*a2*a2*a5*a6*a6*pi2)/4. + \
+(1427*a3*a3*a5*a6*a6*pi2)/12096. + (235*a2*a4*a5*a6*a6*pi2)/2016. + \
+(5*a4*a4*a5*a6*a6*pi2)/2016. + (433*a3*a5*a5*a6*a6*pi2)/60480. + \
+(13*a5*a5*a5*a6*a6*pi2)/199584. + (41*a2*a3*a6*a6*a6*pi2)/36. + \
+(1339*a3*a4*a6*a6*a6*pi2)/9072. + (131*a2*a5*a6*a6*a6*pi2)/1134. + \
+(49*a4*a5*a6*a6*a6*pi2)/5760. + (11*a3*a6*a6*a6*a6*pi2)/144. + \
+(7331*a5*a6*a6*a6*a6*pi2)/1.08864e6 + (14*a2*a2*a2*a2*a3*pi4)/3. + \
+(49*a2*a2*a3*a3*a3*pi4)/36. + (49*a3*a3*a3*a3*a3*pi4)/2160. + \
+(7*a2*a2*a2*a3*a4*pi4)/9. + (7*a2*a3*a3*a3*a4*pi4)/60. + \
+(7*a2*a2*a3*a3*a5*pi4)/90. + (a3*a3*a3*a3*a5*pi4)/360. + \
+(7*a2*a2*a2*a3*a6*pi4)/2. + (77*a2*a3*a3*a3*a6*pi4)/135. + \
+(7*a2*a2*a3*a4*a6*pi4)/20. + (a3*a3*a3*a4*a6*pi4)/48. + \
+(7*a2*a2*a2*a5*a6*pi4)/135. + (a2*a3*a3*a5*a6*pi4)/30. + \
+(371*a2*a2*a3*a6*a6*pi4)/360. + (35*a3*a3*a3*a6*a6*pi4)/576. + \
+(a2*a3*a4*a6*a6*pi4)/16. + (a2*a2*a5*a6*a6*pi4)/60. + \
+(a3*a3*a5*a6*a6*pi4)/288. + (41*a2*a3*a6*a6*a6*pi4)/288. + \
+(7*a3*a4*a6*a6*a6*pi4)/1728. + (a2*a5*a6*a6*a6*pi4)/432. + \
+(11*a3*a6*a6*a6*a6*pi4)/1440. + (7*a5*a6*a6*a6*a6*pi4)/57024.;
+
+
+    Float m6 = a3*a3*a3*a3*a3*a3/448. + (3*a2*a3*a3*a3*a3*a4)/16. + \
+3*a2*a2*a3*a3*a4*a4 + (5*a3*a3*a3*a3*a4*a4)/64. + 5*a2*a2*a2*a4*a4*a4 \
++ (5*a2*a3*a3*a4*a4*a4)/4. + (5*a2*a2*a4*a4*a4*a4)/4. + \
+(19*a3*a3*a4*a4*a4*a4)/192. + (23*a2*a4*a4*a4*a4*a4)/240. + \
+a4*a4*a4*a4*a4*a4/448. + (3*a2*a2*a3*a3*a3*a5)/4. + \
+(a3*a3*a3*a3*a3*a5)/64. + 9*a2*a2*a2*a3*a4*a5 + \
+(9*a2*a3*a3*a3*a4*a5)/8. + (25*a2*a2*a3*a4*a4*a5)/4. + \
+(19*a3*a3*a3*a4*a4*a5)/96. + (23*a2*a3*a4*a4*a4*a5)/24. + \
+(163*a3*a4*a4*a4*a4*a5)/4032. + 3*a2*a2*a2*a2*a5*a5 + \
+(11*a2*a2*a3*a3*a5*a5)/8. + (5*a3*a3*a3*a3*a5*a5)/192. + \
+(5*a2*a2*a2*a4*a5*a5)/2. + (37*a2*a3*a3*a4*a5*a5)/48. + \
+(17*a2*a2*a4*a4*a5*a5)/24. + (19*a3*a3*a4*a4*a5*a5)/252. + \
+(a2*a4*a4*a4*a5*a5)/14. + (a4*a4*a4*a4*a5*a5)/448. + \
+(13*a2*a2*a3*a5*a5*a5)/48. + (127*a3*a3*a3*a5*a5*a5)/12096. + \
+(25*a2*a3*a4*a5*a5*a5)/252. + (109*a3*a4*a4*a5*a5*a5)/15120. + \
+(11*a2*a2*a5*a5*a5*a5)/1008. + (a3*a3*a5*a5*a5*a5)/720. + \
+(47*a2*a4*a5*a5*a5*a5)/15120. + (73*a4*a4*a5*a5*a5*a5)/399168. + \
+(139*a3*a5*a5*a5*a5*a5)/1.99584e6 + \
+(53*a5*a5*a5*a5*a5*a5)/4.6702656e7 + (9*a2*a3*a3*a3*a3*a6)/56. + \
+(21*a2*a2*a3*a3*a4*a6)/4. + (5*a3*a3*a3*a3*a4*a6)/32. + \
+12*a2*a2*a2*a4*a4*a6 + (15*a2*a3*a3*a4*a4*a6)/4. + \
+5*a2*a2*a4*a4*a4*a6 + (43*a3*a3*a4*a4*a4*a6)/96. + \
+(7*a2*a4*a4*a4*a4*a6)/12. + (11*a4*a4*a4*a4*a4*a6)/560. + \
+8*a2*a2*a2*a3*a5*a6 + (9*a2*a3*a3*a3*a5*a6)/8. + \
+(51*a2*a2*a3*a4*a5*a6)/4. + (43*a3*a3*a3*a4*a5*a6)/96. + \
+(7*a2*a3*a4*a4*a5*a6)/2. + (1391*a3*a4*a4*a4*a5*a6)/6048. + \
+3*a2*a2*a2*a5*a5*a6 + (11*a2*a3*a3*a5*a5*a6)/12. + \
+(31*a2*a2*a4*a5*a5*a6)/16. + (13*a3*a3*a4*a5*a5*a6)/63. + \
+(335*a2*a4*a4*a5*a5*a6)/1008. + (239*a4*a4*a4*a5*a5*a6)/15120. + \
+(97*a2*a3*a5*a5*a5*a6)/672. + (17*a3*a4*a5*a5*a5*a6)/720. + \
+(163*a2*a5*a5*a5*a5*a6)/30240. + (353*a4*a5*a5*a5*a5*a6)/498960. + \
+(33*a2*a2*a3*a3*a6*a6)/14. + (5*a3*a3*a3*a3*a6*a6)/64. + \
+10*a2*a2*a2*a4*a6*a6 + (15*a2*a3*a3*a4*a6*a6)/4. + \
+(15*a2*a2*a4*a4*a6*a6)/2. + (3*a3*a3*a4*a4*a6*a6)/4. + \
+(11*a2*a4*a4*a4*a6*a6)/8. + (409*a4*a4*a4*a4*a6*a6)/6048. + \
+(13*a2*a2*a3*a5*a6*a6)/2. + (a3*a3*a3*a5*a6*a6)/4. + \
+(33*a2*a3*a4*a5*a6*a6)/8. + (937*a3*a4*a4*a5*a6*a6)/2016. + \
+(5*a2*a2*a5*a5*a6*a6)/4. + (1091*a3*a3*a5*a5*a6*a6)/8064. + \
+(163*a2*a4*a5*a5*a6*a6)/336. + (673*a4*a4*a5*a5*a6*a6)/17280. + \
+(4423*a3*a5*a5*a5*a6*a6)/241920. + (5101*a5*a5*a5*a5*a6*a6)/7.98336e6 \
++ (20*a2*a2*a2*a6*a6*a6)/7. + (5*a2*a3*a3*a6*a6*a6)/4. + \
+5*a2*a2*a4*a6*a6*a6 + (53*a3*a3*a4*a6*a6*a6)/96. + \
+(19*a2*a4*a4*a6*a6*a6)/12. + (359*a4*a4*a4*a6*a6*a6)/3024. + \
+(19*a2*a3*a5*a6*a6*a6)/12. + (809*a3*a4*a5*a6*a6*a6)/2016. + \
+(113*a2*a5*a5*a6*a6*a6)/504. + (9707*a4*a5*a5*a6*a6*a6)/241920. + \
+(5*a2*a2*a6*a6*a6*a6)/4. + (29*a3*a3*a6*a6*a6*a6)/192. + \
+(43*a2*a4*a6*a6*a6*a6)/48. + (457*a4*a4*a6*a6*a6*a6)/4032. + \
+(1525*a3*a5*a6*a6*a6*a6)/12096. + (3569*a5*a5*a6*a6*a6*a6)/241920. + \
+(a2*a6*a6*a6*a6*a6)/5. + (85*a4*a6*a6*a6*a6*a6)/1512. + \
+(43*a6*a6*a6*a6*a6*a6)/3780. + (25*a2*a2*a3*a3*a3*a3*pi2)/16. + \
+(5*a3*a3*a3*a3*a3*a3*pi2)/192. + (35*a2*a2*a2*a3*a3*a4*pi2)/2. + \
+(5*a2*a3*a3*a3*a3*a4*pi2)/3. + 10*a2*a2*a2*a2*a4*a4*pi2 + \
+(65*a2*a2*a3*a3*a4*a4*pi2)/8. + (19*a3*a3*a3*a3*a4*a4*pi2)/96. + \
+(5*a2*a2*a2*a4*a4*a4*pi2)/3. + (17*a2*a3*a3*a4*a4*a4*pi2)/24. + \
+(a2*a2*a4*a4*a4*a4*pi2)/16. + (5*a3*a3*a4*a4*a4*a4*pi2)/448. + \
+15*a2*a2*a2*a2*a3*a5*pi2 + (35*a2*a2*a3*a3*a3*a5*pi2)/8. + \
+(19*a3*a3*a3*a3*a3*a5*pi2)/288. + (65*a2*a2*a2*a3*a4*a5*pi2)/6. + \
+(37*a2*a3*a3*a3*a4*a5*pi2)/24. + (35*a2*a2*a3*a4*a4*a5*pi2)/24. + \
+(163*a3*a3*a3*a4*a4*a5*pi2)/2016. + (a2*a3*a4*a4*a4*a5*pi2)/21. + \
+(5*a2*a2*a2*a2*a5*a5*pi2)/6. + (23*a2*a2*a3*a3*a5*a5*pi2)/24. + \
+(19*a3*a3*a3*a3*a5*a5*pi2)/756. + (a2*a2*a2*a4*a5*a5*pi2)/3. + \
+(43*a2*a3*a3*a4*a5*a5*pi2)/252. + (11*a2*a2*a4*a4*a5*a5*pi2)/504. + \
+(a3*a3*a4*a4*a5*a5*pi2)/224. + (31*a2*a2*a3*a5*a5*a5*pi2)/756. + \
+(109*a3*a3*a3*a5*a5*a5*pi2)/45360. + (2*a2*a3*a4*a5*a5*a5*pi2)/567. + \
+(a2*a2*a5*a5*a5*a5*pi2)/3024. + (73*a3*a3*a5*a5*a5*a5*pi2)/1.197504e6 \
++ 20*a2*a2*a2*a3*a3*a6*pi2 + (205*a2*a3*a3*a3*a3*a6*pi2)/96. + \
+25*a2*a2*a2*a2*a4*a6*pi2 + (95*a2*a2*a3*a3*a4*a6*pi2)/4. + \
+(59*a3*a3*a3*a3*a4*a6*pi2)/96. + 10*a2*a2*a2*a4*a4*a6*pi2 + \
+(69*a2*a3*a3*a4*a4*a6*pi2)/16. + (23*a2*a2*a4*a4*a4*a6*pi2)/24. + \
+(17*a3*a3*a4*a4*a4*a6*pi2)/112. + (5*a2*a4*a4*a4*a4*a6*pi2)/224. + \
+(55*a2*a2*a2*a3*a5*a6*pi2)/3. + (385*a2*a3*a3*a3*a5*a6*pi2)/144. + \
+(59*a2*a2*a3*a4*a5*a6*pi2)/8. + (2293*a3*a3*a3*a4*a5*a6*pi2)/6048. + \
+(211*a2*a3*a4*a4*a5*a6*pi2)/336. + (5*a3*a4*a4*a4*a5*a6*pi2)/504. + \
+(17*a2*a2*a2*a5*a5*a6*pi2)/18. + (155*a2*a3*a3*a5*a5*a6*pi2)/336. + \
+(3*a2*a2*a4*a5*a5*a6*pi2)/14. + (97*a3*a3*a4*a5*a5*a6*pi2)/2520. + \
+(a2*a4*a4*a5*a5*a6*pi2)/112. + (407*a2*a3*a5*a5*a5*a6*pi2)/22680. + \
+(13*a3*a4*a5*a5*a5*a6*pi2)/16632. + \
+(73*a2*a5*a5*a5*a5*a6*pi2)/598752. + 15*a2*a2*a2*a2*a6*a6*pi2 + \
+(65*a2*a2*a3*a3*a6*a6*pi2)/4. + (343*a3*a3*a3*a3*a6*a6*pi2)/768. + \
+(50*a2*a2*a2*a4*a6*a6*pi2)/3. + (239*a2*a3*a3*a4*a6*a6*pi2)/32. + \
+(7*a2*a2*a4*a4*a6*a6*pi2)/2. + (4303*a3*a3*a4*a4*a6*a6*pi2)/8064. + \
+(11*a2*a4*a4*a4*a6*a6*pi2)/56. + (5*a4*a4*a4*a4*a6*a6*pi2)/2304. + \
+(22*a2*a2*a3*a5*a6*a6*pi2)/3. + (8947*a3*a3*a3*a5*a6*a6*pi2)/24192. + \
+(3487*a2*a3*a4*a5*a6*a6*pi2)/2016. + \
+(929*a3*a4*a4*a5*a6*a6*pi2)/13440. + \
+(335*a2*a2*a5*a5*a6*a6*pi2)/1008. + \
+(6689*a3*a3*a5*a5*a6*a6*pi2)/120960. + \
+(239*a2*a4*a5*a5*a6*a6*pi2)/5040. + (85*a4*a4*a5*a5*a6*a6*pi2)/88704. \
++ (4073*a3*a5*a5*a5*a6*a6*pi2)/1.99584e6 + \
+(281*a5*a5*a5*a5*a6*a6*pi2)/2.0756736e7 + \
+(25*a2*a2*a2*a6*a6*a6*pi2)/3. + (47*a2*a3*a3*a6*a6*a6*pi2)/12. + \
+(55*a2*a2*a4*a6*a6*a6*pi2)/12. + (4205*a3*a3*a4*a6*a6*a6*pi2)/6048. + \
+(409*a2*a4*a4*a6*a6*a6*pi2)/756. + (563*a4*a4*a4*a6*a6*a6*pi2)/40320. \
++ (91*a2*a3*a5*a6*a6*a6*pi2)/72. + \
+(49387*a3*a4*a5*a6*a6*a6*pi2)/362880. + \
+(673*a2*a5*a5*a6*a6*a6*pi2)/12960. + \
+(197*a4*a5*a5*a6*a6*a6*pi2)/55440. + (95*a2*a2*a6*a6*a6*a6*pi2)/48. + \
+(1837*a3*a3*a6*a6*a6*a6*pi2)/6048. + \
+(1795*a2*a4*a6*a6*a6*a6*pi2)/3024. + \
+(141*a4*a4*a6*a6*a6*a6*pi2)/4480. + \
+(58223*a3*a5*a6*a6*a6*a6*pi2)/725760. + \
+(146429*a5*a5*a6*a6*a6*a6*pi2)/4.790016e7 + \
+(457*a2*a6*a6*a6*a6*a6*pi2)/2016. + \
+(21757*a4*a6*a6*a6*a6*a6*pi2)/725760. + \
+(3737*a6*a6*a6*a6*a6*a6*pi2)/362880. + (77*a2*a2*a2*a2*a3*a3*pi4)/4. \
++ (91*a2*a2*a3*a3*a3*a3*pi4)/24. + (133*a3*a3*a3*a3*a3*a3*pi4)/2880. \
++ 7*a2*a2*a2*a2*a2*a4*pi4 + (28*a2*a2*a2*a3*a3*a4*pi4)/3. + \
+(553*a2*a3*a3*a3*a3*a4*pi4)/720. + (7*a2*a2*a2*a2*a4*a4*pi4)/12. + \
+(21*a2*a2*a3*a3*a4*a4*pi4)/40. + (a3*a3*a3*a3*a4*a4*pi4)/64. + \
+(35*a2*a2*a2*a2*a3*a5*pi4)/12. + (371*a2*a2*a3*a3*a3*a5*pi4)/360. + \
+(163*a3*a3*a3*a3*a3*a5*pi4)/8640. + (14*a2*a2*a2*a3*a4*a5*pi4)/45. + \
+(a2*a3*a3*a3*a4*a5*pi4)/15. + (7*a2*a2*a2*a2*a5*a5*pi4)/180. + \
+(11*a2*a2*a3*a3*a5*a5*pi4)/360. + (a3*a3*a3*a3*a5*a5*pi4)/960. + \
+14*a2*a2*a2*a2*a2*a6*pi4 + (287*a2*a2*a2*a3*a3*a6*pi4)/12. + \
+(1519*a2*a3*a3*a3*a3*a6*pi4)/720. + (35*a2*a2*a2*a2*a4*a6*pi4)/6. + \
+(679*a2*a2*a3*a3*a4*a6*pi4)/120. + (a3*a3*a3*a3*a4*a6*pi4)/6. + \
+(7*a2*a2*a2*a4*a4*a6*pi4)/20. + (3*a2*a3*a3*a4*a4*a6*pi4)/16. + \
+(427*a2*a2*a2*a3*a5*a6*pi4)/180. + (959*a2*a3*a3*a3*a5*a6*pi4)/2160. \
++ (a2*a2*a3*a4*a5*a6*pi4)/5. + (a3*a3*a3*a4*a5*a6*pi4)/72. + \
+(11*a2*a2*a2*a5*a5*a6*pi4)/540. + (a2*a3*a3*a5*a5*a6*pi4)/80. + \
+(35*a2*a2*a2*a2*a6*a6*pi4)/4. + (4333*a2*a2*a3*a3*a6*a6*pi4)/480. + \
+(925*a3*a3*a3*a3*a6*a6*pi4)/3456. + (161*a2*a2*a2*a4*a6*a6*pi4)/72. + \
+(19*a2*a3*a3*a4*a6*a6*pi4)/16. + (3*a2*a2*a4*a4*a6*a6*pi4)/32. + \
+(7*a3*a3*a4*a4*a6*a6*pi4)/384. + (1103*a2*a2*a3*a5*a6*a6*pi4)/1440. + \
+(283*a3*a3*a3*a5*a6*a6*pi4)/5760. + (a2*a3*a4*a5*a6*a6*pi4)/24. + \
+(a2*a2*a5*a5*a6*a6*pi4)/160. + (17*a3*a3*a5*a5*a6*a6*pi4)/12672. + \
+(49*a2*a2*a2*a6*a6*a6*pi4)/18. + (2507*a2*a3*a3*a6*a6*a6*pi4)/1728. + \
+(11*a2*a2*a4*a6*a6*a6*pi4)/24. + (493*a3*a3*a4*a6*a6*a6*pi4)/5760. + \
+(7*a2*a4*a4*a6*a6*a6*pi4)/576. + (323*a2*a3*a5*a6*a6*a6*pi4)/2880. + \
+(7*a3*a4*a5*a6*a6*a6*pi4)/2376. + (17*a2*a5*a5*a6*a6*a6*pi4)/19008. + \
+(409*a2*a2*a6*a6*a6*a6*pi4)/864. + (797*a3*a3*a6*a6*a6*a6*pi4)/9216. \
++ (563*a2*a4*a6*a6*a6*a6*pi4)/11520. + \
+(7*a4*a4*a6*a6*a6*a6*pi4)/11264. + \
+(9517*a3*a5*a6*a6*a6*a6*pi4)/1.52064e6 + \
+(581*a5*a5*a6*a6*a6*a6*pi4)/1.1860992e7 + \
+(141*a2*a6*a6*a6*a6*a6*pi4)/3200. + \
+(1627*a4*a6*a6*a6*a6*a6*pi4)/760320. + \
+(13063*a6*a6*a6*a6*a6*a6*pi4)/7.6032e6 + \
+(31*a2*a2*a2*a2*a2*a2*pi6)/21. + (155*a2*a2*a2*a2*a3*a3*pi6)/84. + \
+(31*a2*a2*a3*a3*a3*a3*pi6)/112. + (31*a3*a3*a3*a3*a3*a3*pi6)/9408. + \
+(31*a2*a2*a2*a2*a2*a6*pi6)/42. + (31*a2*a2*a2*a3*a3*a6*pi6)/28. + \
+(155*a2*a3*a3*a3*a3*a6*pi6)/1568. + (31*a2*a2*a2*a2*a6*a6*pi6)/112. + \
+(465*a2*a2*a3*a3*a6*a6*pi6)/1568. + \
+(155*a3*a3*a3*a3*a6*a6*pi6)/16128. + \
+(155*a2*a2*a2*a6*a6*a6*pi6)/2352. + (155*a2*a3*a3*a6*a6*a6*pi6)/4032. \
++ (155*a2*a2*a6*a6*a6*a6*pi6)/16128. + \
+(155*a3*a3*a6*a6*a6*a6*pi6)/78848. + \
+(31*a2*a6*a6*a6*a6*a6*pi6)/39424. + \
+(31*a6*a6*a6*a6*a6*a6*pi6)/1.118208e6;
+
+
+        /* variance of empirical mean */
+        Float w = var/N;
+        // std::cout << w << "\t";
+        Float t1 = 4*Float(0.5)*(m1-mean)*(m1-mean)/w;
+
+        /* variance of empirical variance - estimated as var^2 / N */
+        w *= var;
+        Float t2 = 4*Float(0.5)*(m2-var)*(m2-var)/w;
+
+        w *= var*(2*2);
+        Float t3 = 6*Float(0.5)*m3*m3/w;
+
+        w *= var*(3*3);
+        Float k4 = m4 - 3*m2*m2;
+        Float t4 = 8*Float(0.5)*k4*k4/w;
+
+        w *= var*(4*4);
+        Float k5 = m5 - 10*m3*m2;
+        Float t5 = 12*Float(0.5)*k5*k5/w;
+
+        w *= var*(5*5);
+        Float k6 = m6 - 15*m4*m2 - 10*m3*m3 + 30*m2*m2*m2;
+        Float t6 = 12*Float(0.5)*k6*k6/w;
+
+        loglike -= t1;
+        loglike -= t2;
+        loglike -= t3;
+        loglike -= t4;
+        loglike -= t5;
+        loglike -= t6;
+
+        /* gaussian prior around for quantities that have even number of terms, therefore for y->1-y they don't do x->-x, unlike the odd terms,
+         * so the even terms are zero for all symmetric distributions, and we want something not too skewed. */
+        Float t0 = 0;
+        for (auto j : std::vector<size_t>{0, 2, 4, 7,8})
+            t0 += 0.025*coords[3][j]*coords[3][j]*0.5/(var);
+
+        // loglike -= t0;
+        // std::cout << N << " " << loglike << ": mean=" << mean << " [" << m1 <<  " " << m2 << "(" << var << ") " << m3 << " " << m4 << " " << m5 << " " << m6 << "] " << t0 << " ( " << t1 << " " << t2 << " " << t3 << " " << t4 << " " << t5 << " " << t6 << ")\n";
+
+
+    }
+
+    Proposal step(pcg32& rnd, const SharedParams& shared) const override {
+
+        auto newstate = std::dynamic_pointer_cast<GaussKeelinMixturePDF>(copy());
+
+        Float propRatio = 1;
+
+        /* sometimes mix various steps (and sometimes make them larger) to help get unstuck.
+         * an easy way (not the fastest, but let's not worry about this) is to loop through multiple times.
+         * large steps are not often accepted but should be tried a lot to help convergence. */
+        int nSteps = rnd.nextFloat() * 3 * nModes;
+
+        for (int k = 0; k < nSteps; ++k) {
+            Float stepkind = rnd.nextFloat();
+            Float ampstepthresh = 0.5;
+            Float otherthresh = 0.75;
+
+            if (stepkind < ampstepthresh) {
+                int from, to;
+                Float val;
+                newstate->constraintAmplitudes.step(rnd, std::min(2*stepsizeCorrectionFac/nModes/std::sqrt(N), Float(2.0)/nModes), from, to, val, propRatio);
+            }
+            else {
+                //
+                if (rnd.nextFloat() < 0.6) {
+                //for (size_t i = 0; i < 1; ++i) {
+
+                    size_t whichMode = std::min(size_t(rnd.nextFloat()*nModes), nModes-1);
+
+                    if (stepkind < otherthresh) {
+
+                        if (rnd.nextFloat() < 0.3f)
+                            newstate->coords[1][whichMode] += (rnd.nextFloat()-0.5)*8*std*std::min(stepsizeCorrectionFac, Float(1));
+                        else
+                            newstate->coords[1][whichMode] += 8*(rnd.nextFloat()-0.5)/std::sqrt(N)*std*std::min(stepsizeCorrectionFac, Float(1));
+
+
+                        bound(newstate->coords[1][whichMode], mean-4*std, mean+4*std);
+
+                    }
+                    else {
+
+                        /*sometimes attempt large step: sigma might run away to too large values while amplitude is small, and then amplitude is stuck at 0
+                         * if the data follows a narrowly peaked distribution.
+                         * it is important to be able to have a shortcut to small sigma so amplitude can raise again in that case */
+                        if (rnd.nextFloat() < 0.3f)
+                            newstate->coords[2][whichMode] += (rnd.nextFloat()-0.5)*(maxSigma-minSigma)*std::min(stepsizeCorrectionFac, Float(1));
+                        else
+                            newstate->coords[2][whichMode] += (rnd.nextFloat()-0.5)*(maxSigma-minSigma)/std::sqrt(N)*std::min(stepsizeCorrectionFac, Float(1));
+
+                        bound(newstate->coords[2][whichMode], minSigma, maxSigma);
+                    }
+                }
+                else {
+                    int idx = std::min(int(rnd.nextFloat()*nTerms), nTerms-1);
+                    // int idx2 = std::min(int(rnd.nextFloat()*2), 1);
+
+                    newstate->coords[3][idx] += (rnd.nextFloat()-0.5)*4*std/std::sqrt(N)*std::min(stepsizeCorrectionFac, Float(1));
+                    }
+                }
+        }
+
+        newstate->eval(shared);
+        return Proposal{newstate, propRatio};
+
+    }
+
+    std::shared_ptr<SubspaceState> copy() const override {
+        auto foo = new GaussKeelinMixturePDF(*this);
+        auto& f = foo->getCoordsAt("A");
+        foo->constraintAmplitudes.link(&f);
+        //foo->constraint.link(&(foo->getCoords()[0]));
+        return std::shared_ptr<SubspaceState>(foo);
+    }
+private:
+
+    const ProbabilityDistributionSamples* data;
+
+};
+

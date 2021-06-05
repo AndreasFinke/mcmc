@@ -96,6 +96,13 @@ public:
     virtual void eval(const SharedParams& shared) {
         loglike = 0;
     }
+
+    /* normally, eval should compute derived parameters, which may or can be done here and called from eval.
+     * if it is sure that no other subspace state needs these params, one may skip that - this function is automatically called when samples are saved.
+     * in this way, expensive derived parameters are only computed for the thinned out samples */
+    virtual void compute_derived_late(const SharedParams& shared) {
+    }
+
     //virtual Proposal step_impl(pcg32& rnd, const SharedParams& shared) const = 0;
     virtual Proposal step(pcg32& rnd, const SharedParams& shared) const {
         auto newstate = copy();
@@ -340,10 +347,16 @@ public:
             state[i]->stepsizeCorrectionFac = sz[i];
     }
     std::vector<Float> get_stepsizes() {
+
         std::vector<Float> ret = {};
         for (size_t i = 0; i < state.size(); ++i)
             ret.push_back(state[i]->stepsizeCorrectionFac);
         return ret;
+    }
+
+    void compute_derived_late() {
+        for (size_t i = 0; i < state.size(); ++i)
+            state[i]->compute_derived_late(shared);
     }
 
     std::map<std::string, std::vector<Float>> get_all() {
@@ -370,9 +383,9 @@ public:
     /* Warning: no smart dependency resolution here! That's fine for initialization.
      * During stepping this function will not be called. */
     void eval() {
-        for (int i = 0; i < sharedDependencyMaxDepth; ++i) { 
-            for (auto&& subspace : state) { 
-                subspace->eval(shared); 
+        for (int i = 0; i < sharedDependencyMaxDepth; ++i) {
+            for (auto&& subspace : state) {
+                subspace->eval(shared);
                 update_shared(shared, subspace);
             }
         }
@@ -1028,6 +1041,8 @@ public:
                     loglikes.push_back(target->logprobability(Float(i-nAdjust)/nSamples));
 
                 ics.push_back(target->state->getInitialConditions());
+
+                target->state->compute_derived_late();
 
                 if (writeSamplesToDisk) {
                     auto data = target->state->get_all();
